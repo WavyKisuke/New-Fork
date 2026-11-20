@@ -34,11 +34,12 @@ jobs:
           set -euo pipefail
           test -d "/Applications/Xcode_27.1.app/Contents/Developer" || { echo "::error::Xcode 27.1 is not installed on this runner."; ls -d /Applications/Xcode*.app 2>/dev/null || true; exit 1; }
           sudo xcode-select -s "/Applications/Xcode_27.1.app/Contents/Developer"
-          xcodebuild -version
-          xcodebuild -version | grep -q "Xcode 27.1" || {
+          xcodebuild -version > "$RUNNER_TEMP/xcode-version.txt"
+          cat "$RUNNER_TEMP/xcode-version.txt"
+          if ! grep -Fq "Xcode 27.1" "$RUNNER_TEMP/xcode-version.txt"; then
             echo "::error::NXNative's locked Metal toolchain requires Xcode 27.1."
             exit 1
-          }
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5

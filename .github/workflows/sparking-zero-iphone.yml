@@ -161,7 +161,7 @@ jobs:
           dotnet --version
 
       - name: Install NXNative build dependencies
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ inputs.mode != 'validate' }}
         run: |
           set -euo pipefail
           brew install xcodegen zstd

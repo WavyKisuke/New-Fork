@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: sparking-zero-iphone-4gb
+  group: sparking-zero-iphone-4gb-shader-fix
   cancel-in-progress: true
 
 jobs:

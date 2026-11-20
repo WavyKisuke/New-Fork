@@ -154,7 +154,7 @@ jobs:
           rm -f "$RUNNER_TEMP/gdrive-service-account.json"
 
       - name: Check runner capacity and toolchain
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
         run: |
           set -euo pipefail
           df -h /
@@ -171,7 +171,7 @@ jobs:
           python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd
 
       - name: Restore persistent shader cache
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/nxnative-work/shader
@@ -196,7 +196,7 @@ jobs:
           retention-days: 7
 
       - name: Build unsigned iPhone IPA for 4 GB devices
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
         run: |
@@ -211,7 +211,7 @@ jobs:
             --progress lines
 
       - name: Upload iPhone IPA
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
         uses: actions/upload-artifact@v4
         with:
           name: Sparking-ZERO-iPhone-4GB-IPA

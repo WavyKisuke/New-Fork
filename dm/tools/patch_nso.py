@@ -1205,9 +1205,9 @@ def stdalloc_gates():
     return out
 region_obs += stdalloc_gates()
 # Unreal's FMallocBinned3 (above): the gate on the cut constructor call, a nop now; x0 is the object (the gate number's upper bits name the register, 0)
-if UE_CALL is not None:
-    assert UE_CALL not in kinds and not any(lo <= UE_CALL < hi for wseg in windows for lo, hi in [(wseg[0].address, wseg[-1].address + 4)]), f'FMallocBinned3 gate conflicts with a rewrite site {UE_CALL:#x}'
-    region_obs.append((UE_CALL, OBS_UE_MALLOC, f'{NOP:08x}', 'FMallocBinned3 constructor call (cut): the object in x0; the host puts its allocator\'s vtable in (hle_uemalloc.c)'))
+for _c in UE_CALLS or ():
+    assert _c not in kinds and not any(lo <= _c < hi for wseg in windows for lo, hi in [(wseg[0].address, wseg[-1].address + 4)]), f'FMallocBinned3 gate conflicts with a rewrite site {_c:#x}'
+    region_obs.append((_c, OBS_UE_MALLOC, f'{NOP:08x}', 'FMallocBinned3 constructor call (cut): the object in x0; the host puts its allocator\'s vtable in (hle_uemalloc.c)'))
 # Unreal's engine region (above): the gate on the store of its size, which the callback changes in that register and x1, the size the call asks for
 if UE_REGION is not None:
     assert UE_REGION_REG is not None, 'engine region gate has no size register'
@@ -1580,7 +1580,7 @@ with open(P('fixups.tsv'), 'w') as f:
     if TWO: f.write(f'# BACK_OFF\t{BACK_OFF:#x}\n# BACK_LEN\t{BACK_LEN:#x}\n')   # the back patch area (TWO): its offset in the image, and its length, the last bytes of the file
     for k in KEY_INDEX: f.write(f'# KEY_{k}_IDX\t{KEY_INDEX[k]}\n')
     if FS_STATE_OFF: f.write(f'# FPS_STATE_OFF\t{FS_STATE_OFF:#x}\n')   # frame step state page (FRAME_STEP): the loader writes the target fps there
-    if UE_CALL is not None: f.write(f'# UE_MALLOC_VT\t{UE_VT:#x}\n# UE_MALLOC_SLOT\t{UE_SLOT:#x}\n')   # Unreal's FMallocBinned3 (ue_malloc.py): its vtable and the slot of its name getter, which names the slot layout
+    if UE_CALLS: f.write(f'# UE_MALLOC_VT\t{UE_VT:#x}\n# UE_MALLOC_SLOT\t{UE_SLOT:#x}\n')   # Unreal's FMallocBinned3 (ue_malloc.py): its vtable and the slot of its name getter, which names the slot layout
     for n, o in UE_CVARS.items(): f.write(f'# UE_CVAR:{n}\t{o:#x}\n')   # Unreal console variables (ue_cvar.py): the TAutoConsoleVariable registered under each name
     if RENDER_SCALE: f.write('# RENDER_SCALE\t1\n')   # a render-scale stub reads state +0x10 (the loader ignores the key; dm/games/settings.py offers the setting by it)
     if NAME == 'main':

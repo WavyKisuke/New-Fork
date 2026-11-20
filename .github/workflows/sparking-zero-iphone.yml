@@ -1,6 +1,8 @@
 name: Sparking ZERO iPhone IPA
 
 on:
+  push:
+    branches: [sparking-zero-shader-fix]
   workflow_dispatch:
     inputs:
       mode:
@@ -29,7 +31,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Select Xcode 27.1
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
         run: |
           set -euo pipefail
           test -d "/Applications/Xcode_27.1.app/Contents/Developer" || { echo "::error::Xcode 27.1 is not installed on this runner."; ls -d /Applications/Xcode*.app 2>/dev/null || true; exit 1; }
@@ -59,7 +61,7 @@ jobs:
         env:
           GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID || secrets.GDRIVE_FOLDER_ID }}
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
-          BUILD_MODE: ${{ inputs.mode }}
+          BUILD_MODE: ${{ inputs.mode || 'build' }}
         run: |
           set -euo pipefail
           test -n "$GDRIVE_FOLDER_ID" || { echo "::error::Missing GDRIVE_FOLDER_ID repository variable or secret"; exit 1; }

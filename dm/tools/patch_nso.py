@@ -158,11 +158,11 @@ for w in ue_cvar_why:
 # Its constructor reserves 37 GB of address space for its pools. Its one call is cut, and observation gate OBS_UE_MALLOC goes on it (below), where x0 holds the object: the host gives
 # the object its own allocator's vtable there (dm/host/hle_uemalloc.c), whose place and slot layout the fixups table names (UE_MALLOC_VT, UE_MALLOC_SLOT)
 import ue_malloc
-UE_CALL, UE_VT, UE_SLOT, ue_why = ue_malloc.find(bytes(IMG), TEXT_END, RO_OFF, DATA_OFF)
-if UE_CALL is not None:
-    cuts.append((UE_CALL, bytes(IMG[UE_CALL:UE_CALL + 4]).hex(), struct.pack('<I', NOP).hex(), f'{ue_why}: the constructor call → nop, gate OBS_UE_MALLOC on it (ue_malloc.py)'))
-    struct.pack_into('<I', IMG, UE_CALL, NOP)
-    print(f'{NAME}: {ue_why}')
+UE_CALLS, UE_VT, UE_SLOT, ue_why = ue_malloc.find(bytes(IMG), TEXT_END, RO_OFF, DATA_OFF)
+for _c in UE_CALLS or ():
+    cuts.append((_c, bytes(IMG[_c:_c + 4]).hex(), struct.pack('<I', NOP).hex(), f'{ue_why}: the constructor call → nop, gate OBS_UE_MALLOC on it (ue_malloc.py)'))
+    struct.pack_into('<I', IMG, _c, NOP)
+if UE_CALLS: print(f'{NAME}: {ue_why}')
 elif ue_why.startswith('[RED] '): print(f'[RED] {NAME}: {ue_why[6:]}: Unreal\'s own allocator runs')
 
 # ---- Unreal's engine address region (main: dm/tools/ue_region.py finds the store of its size right before nninitStartup reserves it, without a build ID) ----

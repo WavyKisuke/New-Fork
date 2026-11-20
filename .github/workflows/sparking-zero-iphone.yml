@@ -1,0 +1,202 @@
+name: Sparking ZERO iPhone IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Validate Drive files first, or run the full IPA build"
+        type: choice
+        required: true
+        default: validate
+        options:
+          - validate
+          - build
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sparking-zero-iphone-4gb
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      ready: ${{ steps.validate.outputs.ready }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Google Drive client
+        run: python -m pip install --disable-pip-version-check google-api-python-client google-auth
+
+      - name: Download and validate game files from Drive
+        id: validate
+        env:
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$GDRIVE_FOLDER_ID" || { echo "::error::Missing GDRIVE_FOLDER_ID secret"; exit 1; }
+          test -n "$GDRIVE_SERVICE_ACCOUNT_JSON" || { echo "::error::Missing GDRIVE_SERVICE_ACCOUNT_JSON secret"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/nxnative-input/game" "$RUNNER_TEMP/nxnative-input/keys"
+          printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gdrive-service-account.json"
+          chmod 600 "$RUNNER_TEMP/gdrive-service-account.json"
+          cat > "$RUNNER_TEMP/download_drive.py" <<'PY'
+          import io, json, os, pathlib, sys
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+
+          folder_id = os.environ["GDRIVE_FOLDER_ID"]
+          creds = service_account.Credentials.from_service_account_file(
+              os.path.join(os.environ["RUNNER_TEMP"], "gdrive-service-account.json"),
+              scopes=["https://www.googleapis.com/auth/drive.readonly"])
+          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "nxnative-input"
+          queue = [(folder_id, pathlib.Path(""))]
+          found = []
+          while queue:
+              parent, rel = queue.pop(0)
+              page = None
+              while True:
+                  result = drive.files().list(
+                      q=f"'{parent}' in parents and trashed=false",
+                      fields="nextPageToken,files(id,name,mimeType,size)",
+                      pageToken=page, pageSize=1000).execute()
+                  for item in result.get("files", []):
+                      name = item["name"]
+                      child_rel = rel / name
+                      if item["mimeType"] == "application/vnd.google-apps.folder":
+                          queue.append((item["id"], child_rel))
+                      elif item["mimeType"] == "application/vnd.google-apps.shortcut":
+                          print(f"Skipping Drive shortcut: {child_rel}")
+                      else:
+                          found.append((item, child_rel))
+                  page = result.get("nextPageToken")
+                  if not page:
+                      break
+
+          if not found:
+              raise SystemExit("The Drive folder is empty or inaccessible to the service account.")
+
+          game_ext = {".nsp", ".nsz", ".xci", ".xcz"}
+          keys = []
+          game_files = []
+          for item, rel in found:
+              lower = rel.name.lower()
+              if lower == "prod.keys":
+                  keys.append((item, rel))
+              elif rel.suffix.lower() in game_ext:
+                  game_files.append((item, rel))
+          if len(keys) != 1:
+              raise SystemExit(f"Expected exactly one prod.keys file; found {len(keys)}.")
+          if not game_files:
+              raise SystemExit("No .nsp, .nsz, .xci, or .xcz game packages found in Drive.")
+
+          def download(item, destination):
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              request = drive.files().get_media(fileId=item["id"])
+              with open(destination, "wb") as output:
+                  downloader = MediaIoBaseDownload(output, request, chunksize=8 * 1024 * 1024)
+                  done = False
+                  while not done:
+                      status, done = downloader.next_chunk()
+                      if status:
+                          print(f"{destination.name}: {int(status.progress() * 100)}%")
+
+          for item, rel in game_files:
+              download(item, root / "game" / rel.name)
+          download(keys[0][0], root / "keys" / "prod.keys")
+
+          total = sum(p.stat().st_size for p in (root / "game").iterdir() if p.is_file())
+          print(f"Downloaded {len(game_files)} game package(s), one prod.keys ({total} bytes of game data).")
+          PY
+          python "$RUNNER_TEMP/download_drive.py"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          rm -f "$RUNNER_TEMP/gdrive-service-account.json"
+
+      - name: Upload validated input files for the build job
+        if: ${{ inputs.mode == 'build' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sparking-zero-input
+          path: ${{ runner.temp }}/nxnative-input/
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    if: ${{ inputs.mode == 'build' && needs.prepare.outputs.ready == 'true' }}
+    needs: prepare
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download validated game files
+        uses: actions/download-artifact@v4
+        with:
+          name: sparking-zero-input
+          path: ${{ runner.temp }}/nxnative-input
+
+      - name: Check runner capacity and Xcode
+        run: |
+          set -euo pipefail
+          df -h /
+          xcodebuild -version
+          python3 --version
+          dotnet --version || true
+          brew --version
+
+      - name: Select Xcode 27.1
+        run: |
+          set -euo pipefail
+          if [ -d "/Applications/Xcode_27.1.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode_27.1.app/Contents/Developer"
+          fi
+          xcodebuild -version
+          xcodebuild -version | grep -q "Xcode 27.1" || {
+            echo "::error::NXNative requires Xcode 27.1 for the locked Metal shader toolchain."
+            exit 1
+          }
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          brew install xcodegen zstd
+          brew install --cask dotnet-sdk
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "lz4" "capstone>=5,<6" fonttools backports.zstd
+
+      - name: Restore persistent shader/build cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nxnative-work
+          key: nxnative-sparkingzero-iphone4gb-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**') }}
+          restore-keys: |
+            nxnative-sparkingzero-iphone4gb-
+
+      - name: Build unsigned iPhone IPA for 4 GB devices
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nxnative-work"
+          python3 scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
+            --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
+            --platform ios \
+            --older-iphone 128 \
+            --work-dir "$RUNNER_TEMP/nxnative-work" \
+            --out "$RUNNER_TEMP/Sparking-ZERO-iPhone-4GB.ipa" \
+            --progress
+
+      - name: Upload iPhone IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sparking-ZERO-iPhone-4GB-IPA
+          path: ${{ runner.temp }}/Sparking-ZERO-iPhone-4GB.ipa
+          if-no-files-found: error
+          retention-days: 7

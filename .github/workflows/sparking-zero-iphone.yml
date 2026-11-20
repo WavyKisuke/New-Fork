@@ -20,7 +20,7 @@ permissions:
 
 concurrency:
   group: sparking-zero-iphone-4gb
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:

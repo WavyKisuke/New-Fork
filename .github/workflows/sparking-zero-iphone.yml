@@ -199,6 +199,7 @@ jobs:
         if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+          DMSH_TARGETS: ios
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/nxnative-work"

@@ -2807,15 +2807,12 @@ def env_file_pairs(path):   # an environment file's switches (one KEY=VALUE per 
     return out
 
 
-OLDER_IPHONE_SIZES = ('64', '128', '256', '512', '1024', 'full')
+OLDER_IPHONE_SIZES = ('128',)
 
 
 def older_iphone_pairs(size):
-    """Memory and texture switches for a GPU that cannot sample BC textures."""
-    pairs = {'DM_OPMODE': '0'}
-    if size != 'full': pairs['DM_BC_MAX_SIZE'] = size
-    pairs.update({'DM_ZERO_PAGES': '10', 'DM_BC_FREE_BLOCKS': '1'})
-    return pairs
+    """4 GB iPhone settings for upstream's BC-to-ASTC path and zero-page reclamation."""
+    return {'DM_OPMODE': '0', 'DM_ZERO_PAGES': '10', 'DM_NO_BC_ASTC': 'all'}
 
 
 def build_env_file(work, env_file, motion, older=''):
@@ -3153,9 +3150,9 @@ def parse_args(argv):
     ap.add_argument('--motion', action=argparse.BooleanOptionalAction, help='pass a gyro controller\'s motion (on iOS also the phone\'s own) to games that read it; --no-motion builds with DM_MOTION=0, for when motion misbehaves (default: the MOTION setting, on)')
     older = ap.add_mutually_exclusive_group()
     older.add_argument('--older-iphone', nargs='?', const='128', choices=OLDER_IPHONE_SIZES, metavar='TEXTURE_SIZE',
-                       help='CPU-decode BC textures and fit memory for older iPhones; default texture size 128 for 4 GB')
+                       help='enable the 4 GB iPhone memory preset; uses upstream BC-to-ASTC and zero-page reclamation')
     older.add_argument('--4gb', dest='older_iphone', action='store_const', const='128', help='4 GB iPhone preset')
-    older.add_argument('--6gb', dest='older_iphone', action='store_const', const='512', help='6 GB iPhone preset (untested)')
+    older.add_argument('--6gb', dest='older_iphone', action='store_const', const='512', help='6 GB iPhone preset (not configured in this branch)')
     older.add_argument('--8gb', dest='older_iphone', action='store_const', const='', help='8 GB or more; no older-iPhone switches')
     ap.add_argument('--survey-only', action='store_true', help='a game with no profile: only the survey, no provisional profile and no IPA')
     ap.add_argument('--program', type=int, default=None, help='a multi-program application (Super Mario 3D All-Stars): pack program N of the NSPs as a game of its own, title ID = the application\'s + N (default: the PROGRAM_INDEX setting, 0; a game whose profile lists programs packs them all as one from program 0: this is for bring-up). A NUP of several programs (a Switch 2 Edition of a Switch 1 game): program N, title ID = its program ID (default: the highest), with the other programs\' RomFS beside its own')

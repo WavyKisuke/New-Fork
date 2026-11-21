@@ -190,7 +190,7 @@ jobs:
           path: ${{ runner.temp }}/nxnative-work/shader
           key: nxnative-sparkingzero-iphone4gb-metal-override-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
           restore-keys: |
-            nxnative-sparkingzero-iphone4gb-
+            nxnative-sparkingzero-iphone4gb-metal-override-
 
       - name: Generate Sparking ZERO game survey
         if: ${{ inputs.mode == 'survey' }}

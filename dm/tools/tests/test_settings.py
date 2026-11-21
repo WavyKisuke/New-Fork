@@ -30,6 +30,14 @@ class FrameRateOption(unittest.TestCase):
                 self.assertEqual(fps['default'],'60',gid)
                 self.assertEqual(fps['options'],[['30','30 fps'],['60','60 fps']]+([['120','120 fps']] if has else []),(gid,platform))
 
+class SparkingZeroSafeFrameRate(unittest.TestCase):
+    def test_only_30_fps_is_offered_until_iphone_stability_is_verified(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):
+            (Path(tmp)/'main.fixups.tsv').write_text('')
+            fps=next(s for s in settings.build('010035F022078000',tmp,'unused')['settings'] if s['env']=='DM_FPS_TARGET')
+            self.assertEqual(fps['default'],'30')
+            self.assertEqual(fps['options'],[['30','30 fps']])
+
 class UpscalerSetting(unittest.TestCase):
     def test_only_for_games_naming_their_upscaler(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(settings.nacp,'languages',return_value=['en-US']):

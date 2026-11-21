@@ -31,7 +31,7 @@ No rewriter cuts of its own and no `patches.py`.
 
 ## Frame rate
 
-- **Current:** 60 fps (30 on the Switch), by the host's writes of `rhi.SyncInterval` (2 → 1) and of the engine's fixed frame rate (`main: Unreal fixed frame rate (GEngine->FixedFrameRate) 30 → 60 fps`). `DM_FPS_TARGET=30` keeps the game's own 30.
+- **iPhone stability default (2026-11-21):** Handheld mode and 30 fps. The profile caps the launcher at 30 fps for now, so saved 60/120 fps choices are no longer offered and fall back to 30. This is a conservative thermal/stutter mitigation, not proof of sustained performance. The 60 fps override was judged by eye only in a Mac tutorial battle; it has not been validated on an iPhone. The game's native Switch target is 30 fps. `DM_FPS_TARGET=30` keeps the game's own 30.
 - **The battles step by the engine's fixed frame rate.** `SparkingZERO/Config/DefaultEngine.ini` sets `bUseFixedFrameRate=True` and `FixedFrameRate=30.000000`: Unreal steps every frame by exactly 1 / `FixedFrameRate` s and holds its tick to that rate. Unreal's Switch frame pace (`main+0x1e1e904`, mode 0 / 1 / 2) caches `rhi.SyncInterval`, sets it to 1 for mode 2 and 2 for the others, and stores {30, 24, 60}[mode] into `GEngine->FixedFrameRate` (`GEngine` at `main+0x9aefa30`, through the GOT slot `main+0x8dbfb40`; the property at `+0x9c8`, its reflection entry at `main+0x895f6a0`). The title runs near 60 at the game's own setting; the battles and their cinematics at 30. The game sets no `t.MaxFPS`. The rewriter finds the property and `GEngine` without a build ID: [Unreal's fixed frame rate, found by its reflection entry](../../../docs/reference/frame-rate.md#unreals-fixed-frame-rate-found-by-its-reflection-entry).
 - With `rhi.SyncInterval` alone (2026-11-07, before that rule) the battles stayed at 30.0 fps.
 - **Speed at 60** (2026-11-08, headless runs from `run/save`, `run/ab2.sh`, a shot a second through the tutorial battle's start, `DM_FOCUS_KEEP=1 DM_WINDOW_TOP=1`): the battle at 56–60 fps. The counter at the HUD's top left stepped every 13 s at 30 and every 14 s at 60 (shots a second apart). The runs' timed presses landed at different points (the title came sooner in the 60 run), so their scripted events do not line up. The user then played the tutorial battle in a window and found the timing right at 60.
@@ -64,5 +64,5 @@ General changes first needed here; each applies to every game:
 
 - The landscape after the page table fix on an iPhone ([#1889](https://github.com/seedds/nxnative/issues/1889)): checked on the Mac only; see [Rendering](#rendering).
 - Past the tutorial's first steps: the rest of the tutorial, the episodes, other stages and characters, the add-on characters.
-- Speed at 60 and 120 judged by eye in the tutorial battle only; not compared over the same inputs at both rates.
+- 60/120 fps have not been validated on iPhone; the iPhone launcher is temporarily capped at 30 fps pending sustained-play testing.
 - No IPA built, nothing run on an iPhone.

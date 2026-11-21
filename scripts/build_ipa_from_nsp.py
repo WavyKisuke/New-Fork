@@ -83,6 +83,7 @@ PSO_GPUS = ''                           # NVN games: GPU architectures the app g
                                         #   PLATFORM 'mac-app': the Mac app's archive (Resources/pso), empty = this Mac's GPU (e.g. 'g14s' for an M2 Max), 'none' = the app builds its bases on its first start
 SHOW_FPS = True                         # True shows the game's frame rate on the iPhone (frames on screen per second, top left); DM_SHOW_FPS=0 / 1 in the app's Documents/env.txt changes it without a rebuild
 MOTION = True                           # True passes a gyro controller's motion (on iOS also the phone's own) to games that read it; False builds with DM_MOTION=0, for when motion misbehaves (DM_MOTION=1 in the app's Documents/env.txt turns it back on without a rebuild)
+OLDER_IPHONE = ''                       # texture limit and memory switches for iPhones before A17 Pro; '128' is the 4 GB preset
 SURVEY_ONLY = False                     # a game with no profile in dm/games: only write the survey, no provisional profile and no IPA
 PROFILE_OUT = ''                        # where a provisional profile goes (empty = <build folder>/profile, i.e. <NSP folder>/<title ID>_build/profile unless WORK_DIR is set; the profile is <this>/<title ID>/)
 PROGRAM_INDEX = 0                       # a multi-program application (Super Mario 3D All-Stars: a launcher and one program per game): which program to pack, 0 = the application's own; its title ID is the application's + the index.
@@ -2806,14 +2807,25 @@ def env_file_pairs(path):   # an environment file's switches (one KEY=VALUE per 
     return out
 
 
-def build_env_file(work, env_file, motion):
-    """The environment file the build bakes in (the iOS app's bundled dm/env.txt, the Mac app's, the Mac run command's switches): the --env-file / DM_ENV_FILE one as it is, or, for a build
-    without motion (MOTION / --no-motion), its switches plus DM_MOTION=0 in <id>_build/build_env.txt"""
-    if motion: return env_file
-    pairs = env_file_pairs(env_file) if env_file else {}
-    pairs['DM_MOTION'] = '0'
+OLDER_IPHONE_SIZES = ('64', '128', '256', '512', '1024', 'full')
+
+
+def older_iphone_pairs(size):
+    """Memory and texture switches for a GPU that cannot sample BC textures."""
+    pairs = {'DM_OPMODE': '0'}
+    if size != 'full': pairs['DM_BC_MAX_SIZE'] = size
+    pairs.update({'DM_ZERO_PAGES': '10', 'DM_BC_FREE_BLOCKS': '1'})
+    return pairs
+
+
+def build_env_file(work, env_file, motion, older=''):
+    """Bake the older-iPhone memory switches and optional motion setting into the app."""
+    if motion and not older: return env_file
+    pairs = older_iphone_pairs(older) if older else {}
+    pairs.update(env_file_pairs(env_file) if env_file else {})
+    if not motion: pairs['DM_MOTION'] = '0'
     f = work / 'build_env.txt'
-    f.write_text(''.join(f'{k}={v}\n' for k, v in pairs.items()))
+    f.write_text(''.join(f'{k}={v}\\n' for k, v in pairs.items()))
     return str(f)
 
 
@@ -3139,6 +3151,12 @@ def parse_args(argv):
                     'minutes instead of hours, but areas the list does not cover draw without the rest until this runs again (default: the SEEN_SHADERS setting, off)')
     ap.add_argument('--show-fps', action=argparse.BooleanOptionalAction, help='show the game\'s frame rate on the iPhone, frames on screen per second at the top left (default: the SHOW_FPS setting, on)')
     ap.add_argument('--motion', action=argparse.BooleanOptionalAction, help='pass a gyro controller\'s motion (on iOS also the phone\'s own) to games that read it; --no-motion builds with DM_MOTION=0, for when motion misbehaves (default: the MOTION setting, on)')
+    older = ap.add_mutually_exclusive_group()
+    older.add_argument('--older-iphone', nargs='?', const='128', choices=OLDER_IPHONE_SIZES, metavar='TEXTURE_SIZE',
+                       help='CPU-decode BC textures and fit memory for older iPhones; default texture size 128 for 4 GB')
+    older.add_argument('--4gb', dest='older_iphone', action='store_const', const='128', help='4 GB iPhone preset')
+    older.add_argument('--6gb', dest='older_iphone', action='store_const', const='512', help='6 GB iPhone preset (untested)')
+    older.add_argument('--8gb', dest='older_iphone', action='store_const', const='', help='8 GB or more; no older-iPhone switches')
     ap.add_argument('--survey-only', action='store_true', help='a game with no profile: only the survey, no provisional profile and no IPA')
     ap.add_argument('--program', type=int, default=None, help='a multi-program application (Super Mario 3D All-Stars): pack program N of the NSPs as a game of its own, title ID = the application\'s + N (default: the PROGRAM_INDEX setting, 0; a game whose profile lists programs packs them all as one from program 0: this is for bring-up). A NUP of several programs (a Switch 2 Edition of a Switch 1 game): program N, title ID = its program ID (default: the highest), with the other programs\' RomFS beside its own')
     ap.add_argument('--allow-damaged', action='store_true', help='a damaged NSP (files failing the NCA hash check), or files whose bytes do not start as their names promise (a .zs file that is no zstd stream): write them as read and go on instead of stopping')
@@ -3256,6 +3274,8 @@ def main(args=None):
     prepare_xcode = args.prepare_xcode or PREPARE_XCODE
     platform = args.platform or PLATFORM
     if platform not in ('ios', 'mac', 'mac-app'): raise BuildError(f'PLATFORM / --platform must be ios, mac or mac-app: {platform}')
+    older = OLDER_IPHONE if args.older_iphone is None else args.older_iphone
+    if older and older not in OLDER_IPHONE_SIZES: raise BuildError(f'OLDER_IPHONE / --older-iphone must be one of {", ".join(OLDER_IPHONE_SIZES)}: {older}')
     mac = platform in ('mac', 'mac-app')   # the Mac's shaders and host only: no iOS shaders, Xcode project or IPA (mac_run prints the command; mac-app packs a Mac app, mac_app)
     mac_pack = platform == 'mac-app'
     seen_shaders = SEEN_SHADERS if args.seen_shaders is None else args.seen_shaders
@@ -3495,8 +3515,9 @@ def main(args=None):
     motion = MOTION if args.motion is None else args.motion
     jit = uses_jit(game / 'ExeFS')
     if jit and not mac and not mac_pack: capture_jit(py, repo, game, patched, work, env, logs, g)   # the iPhone runs no code made at run time: it serves the plugin's output from an image
-    env_file = build_env_file(work, args.env_file or DM_ENV_FILE, motion)
+    env_file = build_env_file(work, args.env_file or DM_ENV_FILE, motion, older)
     if not motion: say('motion (gyro): off, DM_MOTION=0 is built in (on the iPhone, DM_MOTION=1 in the app\'s Documents/env.txt turns it back on)')
+    if older: say(f'older iPhone: texture size {older}, {" ".join(f"{k}={v}" for k, v in older_iphone_pairs(older).items())} built in')
     if mac_pack:   # a Mac app: the Mac host, then the app packed from it and the build's files
         if getattr(args, 'in_programs', None) is not None:   # a program of the game: the app its first program's build packs takes these
             rmtree(work / 'tmp'); return {'patched': patched, 'romfs': rfs.source(game), 'msl': ios / (f'b-{chain_of(repo)}' if gfx == 'nvn' else 'vk' if gfx == 'vulkan' else 'gl'), 'tables': g.table('shader_map.tsv').parent, 'html': game / 'html', 'gfx': gfx}

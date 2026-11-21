@@ -199,6 +199,9 @@ jobs:
         if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+          # This is an iPhone IPA build: generate iOS Metal libraries only.
+          # Keep the macOS runner/Xcode toolchain, but skip unused macOS metallib compilation.
+          DMSH_TARGETS: ios
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/nxnative-work"

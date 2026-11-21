@@ -35,10 +35,14 @@ app_pool	0xCD500000
 sys_resource	0x1e00000
 
 # ---- Frame rate ----
-# 60 fps (30 on the Switch): the host writes rhi.SyncInterval 1 and GEngine->FixedFrameRate 60 (dm/tools/ue_fixed_rate.py), which the engine steps the battles by; see the note's Frame rate
-fps_target	60
+# Safe iPhone default: 30 fps while sustained 60 fps stability and thermals are validated on-device.
+fps_target	30
 # 120 on the Mac when chosen: under test (the note's Frame rate)
 fps_max	120
+
+# ---- Operation mode ----
+# Start in handheld mode to reduce the game's rendering load on an iPhone; Console/Docked remains selectable in the launcher.
+op_mode	handheld
 
 # ---- Input ----
 # a 3D arena whose camera follows the fight, many buttons (D-pad, both sticks)

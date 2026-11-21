@@ -168,7 +168,7 @@ def header_one(g):
     fc = g.get('fps_cap', '0')   # whether the launcher offers the Auto / 30 fps Frame rate row (DM_FPS): 1 only for a game verified to step by elapsed time, so 30 fps is not slow motion; 1 / 0
     if fc not in ('0', '1'): sys.exit(f'{g.id}: fps_cap must be 0 or 1: {fc}')
     if fc == '1' and ft != '0': sys.exit(f'{g.id}: fps_cap and fps_target both set: the launcher has one Frame rate row per game')
-    fm = g.get('fps_max', '60')   # the highest rate fps_target and the player's Frame rate may take: 120 only for a game checked at that speed (hle_nvn.c fps_high)
+    fm = g.get('fps_max', '60')   # highest rate offered by the launcher: 30 can temporarily disable higher rates while a game is validated; 120 needs a speed check (hle_nvn.c fps_high)
     if fm not in ('30', '60', '120'): sys.exit(f'{g.id}: fps_max must be 60 or 120: {fm}')
     fh = g.get('fps_hold', 'on')   # whether the frame step may hold a frame longer than the cap's vsyncs when frames come late (hle_nvn.c fstep_tick): on / off
     if fh not in ('on', 'off'): sys.exit(f'{g.id}: fps_hold must be on or off: {fh}')

@@ -2811,8 +2811,17 @@ OLDER_IPHONE_SIZES = ('128',)
 
 
 def older_iphone_pairs(size):
-    """4 GB iPhone settings for upstream's BC-to-ASTC path and zero-page reclamation."""
-    return {'DM_OPMODE': '0', 'DM_ZERO_PAGES': '10', 'DM_NO_BC_ASTC': 'all'}
+    """Memory settings for 4 GB (128) and 6 GB (512) iPhones.
+
+    Keep zero-page reclamation enabled on both presets. The 4 GB preset
+    disables BC-to-ASTC selectively for all textures; the 6 GB preset keeps
+    the upstream 512 texture-size threshold instead of applying the 4 GB
+    all-texture restriction.
+    """
+    if size not in OLDER_IPHONE_SIZES and size != '512':
+        raise BuildError(f'unsupported older-iPhone texture size: {size}')
+    return {'DM_OPMODE': '0', 'DM_ZERO_PAGES': '10',
+            'DM_NO_BC_ASTC': 'all' if size == '128' else '512'}
 
 
 def build_env_file(work, env_file, motion, older=''):
@@ -3152,7 +3161,7 @@ def parse_args(argv):
     older.add_argument('--older-iphone', nargs='?', const='128', choices=OLDER_IPHONE_SIZES, metavar='TEXTURE_SIZE',
                        help='enable the 4 GB iPhone memory preset; uses upstream BC-to-ASTC and zero-page reclamation')
     older.add_argument('--4gb', dest='older_iphone', action='store_const', const='128', help='4 GB iPhone preset')
-    older.add_argument('--6gb', dest='older_iphone', action='store_const', const='512', help='6 GB iPhone preset (not configured in this branch)')
+    older.add_argument('--6gb', dest='older_iphone', action='store_const', const='512', help='6 GB iPhone preset (512 texture-size threshold with zero-page reclamation)')
     older.add_argument('--8gb', dest='older_iphone', action='store_const', const='', help='8 GB or more; no older-iPhone switches')
     ap.add_argument('--survey-only', action='store_true', help='a game with no profile: only the survey, no provisional profile and no IPA')
     ap.add_argument('--program', type=int, default=None, help='a multi-program application (Super Mario 3D All-Stars): pack program N of the NSPs as a game of its own, title ID = the application\'s + N (default: the PROGRAM_INDEX setting, 0; a game whose profile lists programs packs them all as one from program 0: this is for bring-up). A NUP of several programs (a Switch 2 Edition of a Switch 1 game): program N, title ID = its program ID (default: the highest), with the other programs\' RomFS beside its own')

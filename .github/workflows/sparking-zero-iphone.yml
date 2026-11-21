@@ -200,6 +200,7 @@ jobs:
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
           # This is an iPhone IPA build: generate iOS Metal libraries only.
+      # EA BIG4/EASF shader readers are vendored under dm/gfx/tools/easf/.
           # Keep the macOS runner/Xcode toolchain, but skip unused macOS metallib compilation.
           DMSH_TARGETS: ios
         run: |

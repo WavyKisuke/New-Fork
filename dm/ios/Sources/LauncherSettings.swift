@@ -132,7 +132,12 @@ final class LauncherModel: ObservableObject {
     func applySaved() {
         for s in settings where !fixed.contains(s.env) {
             let v = values[s.env] ?? s.def
-            if !s.isDefault(v) { setenv(s.env, v, 1); fputs("launcher: \(s.env)=\(v) (saved choice)\n", stderr) }
+            // Always apply the iPhone's Handheld default, including when the
+            // launcher is skipped. A saved user selection still takes precedence.
+            if s.env == "DM_OPMODE" || !s.isDefault(v) {
+                setenv(s.env, v, 1)
+                fputs("launcher: \(s.env)=\(v)\(s.isDefault(v) ? " (default)" : " (saved choice)")\n", stderr)
+            }
         }
     }
 }

@@ -188,9 +188,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/nxnative-work/shader
-          key: nxnative-sparkingzero-iphone4gb-metal-override-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
+          key: nxnative-sparkingzero-iphone6gb-metal-override-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
           restore-keys: |
-            nxnative-sparkingzero-iphone4gb-metal-override-
+            nxnative-sparkingzero-iphone6gb-metal-override-
 
       - name: Generate Sparking ZERO game survey
         if: ${{ inputs.mode == 'survey' }}
@@ -208,7 +208,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Build unsigned iPhone IPA for 4 GB devices
+      - name: Build unsigned iPhone IPA for 6 GB iPhone devices
         if: ${{ inputs.mode == 'build' }}
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
@@ -221,17 +221,17 @@ jobs:
           python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
             --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
             --platform ios \
-            --4gb \
+            --6gb \
             $NXNATIVE_METAL_ARGS \
             --work-dir "$RUNNER_TEMP/nxnative-work" \
-            --out "$RUNNER_TEMP/Sparking-ZERO-iPhone-4GB.ipa" \
+            --out "$RUNNER_TEMP/Sparking-ZERO-iPhone-6GB.ipa" \
             --progress lines
 
       - name: Upload iPhone IPA
         if: ${{ inputs.mode == 'build' }}
         uses: actions/upload-artifact@v4
         with:
-          name: Sparking-ZERO-iPhone-4GB-IPA
-          path: ${{ runner.temp }}/Sparking-ZERO-iPhone-4GB.ipa
+          name: Sparking-ZERO-iPhone-6GB-IPA
+          path: ${{ runner.temp }}/Sparking-ZERO-iPhone-6GB.ipa
           if-no-files-found: error
           retention-days: 7

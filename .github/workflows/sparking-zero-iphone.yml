@@ -28,18 +28,32 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode 27.1
+      - name: Select compatible Metal toolchain
         if: ${{ inputs.mode == 'build' }}
         run: |
           set -euo pipefail
-          test -d "/Applications/Xcode_27.1.app/Contents/Developer" || { echo "::error::Xcode 27.1 is not installed on this runner."; ls -d /Applications/Xcode*.app 2>/dev/null || true; exit 1; }
-          sudo xcode-select -s "/Applications/Xcode_27.1.app/Contents/Developer"
-          xcodebuild -version > "$RUNNER_TEMP/xcode-version.txt"
-          cat "$RUNNER_TEMP/xcode-version.txt"
-          if ! grep -Fq "Xcode 27.1" "$RUNNER_TEMP/xcode-version.txt"; then
-            echo "::error::NXNative's locked Metal toolchain requires Xcode 27.1."
+          # Prefer the exact Xcode 27.2 compiler recorded in dmsh_chain.lock.
+          # Hosted xcode-27 runners may only include Xcode 27.1; in that case
+          # use NXNative's explicit override and keep its shader cache isolated.
+          if [ -d "/Applications/Xcode-27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode-27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.1.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.1.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "::warning::Xcode 27.2 is unavailable. Building with the runner's Metal compiler via --allow-other-metal; shader rendering must be tested on-device."
+          else
+            echo "::error::No supported Xcode 27.2 or 27.1 installation found."
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
             exit 1
           fi
+          sudo xcode-select -s "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun -sdk iphoneos metal --version
+          xcodebuild -downloadComponent MetalToolchain
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -174,7 +188,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/nxnative-work/shader
-          key: nxnative-sparkingzero-iphone4gb-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
+          key: nxnative-sparkingzero-iphone4gb-metal-override-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
           restore-keys: |
             nxnative-sparkingzero-iphone4gb-
 

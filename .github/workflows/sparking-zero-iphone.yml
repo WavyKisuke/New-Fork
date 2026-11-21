@@ -194,7 +194,7 @@ jobs:
           retention-days: 7
 
       - name: Build unsigned iPhone IPA for 4 GB devices
-        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
+        if: ${{ inputs.mode == 'build' }}
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
           # iPhone IPA: use the EA shader readers and build iOS Metal libraries only.
@@ -212,7 +212,7 @@ jobs:
             --progress lines
 
       - name: Upload iPhone IPA
-        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
+        if: ${{ inputs.mode == 'build' }}
         uses: actions/upload-artifact@v4
         with:
           name: Sparking-ZERO-iPhone-4GB-IPA

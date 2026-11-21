@@ -10,7 +10,8 @@ void nvn_dirty_open(const void *addr, size_t len);                 // Make the c
 void nvn_dirty_close(void);                                        // Protect them again; those whose bytes changed meanwhile count as written
 void nvn_dirty_open_stats(uint64_t *opened, uint64_t *changed);    // Cumulative: pages nvn_dirty_open opened, and those of them that changed while open
 int nvn_dirty_tracked(const void *addr, size_t len);
-void nvn_dirty_protect(const void *addr, size_t len);              // Set the covered pages read-only
+void nvn_dirty_protect(const void *addr, size_t len);
+size_t nvn_dirty_discard(const void *addr, size_t len, size_t *failed);              // Set the covered pages read-only
 void nvn_dirty_protect_sparse(const void *addr, size_t len);       // The same, for the pages behind a placement sparse tile: a later write to one moves nvn_dirty_sparse_writes
 uint64_t nvn_dirty_sparse_writes(void);                            // Writes so far to pages protected that way
 void nvn_dirty_own_thread(void);                                   // The calling thread is the one that replays submissions

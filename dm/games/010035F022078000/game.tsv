@@ -37,8 +37,8 @@ sys_resource	0x1e00000
 # ---- Frame rate ----
 # Safe iPhone default: 30 fps while sustained 60 fps stability and thermals are validated on-device.
 fps_target	30
-# 120 on the Mac when chosen: under test (the note's Frame rate)
-fps_max	120
+# Keep 60/120 FPS unavailable in the launcher until iPhone stability is verified; saved higher-rate choices fall back to 30.
+fps_max	30
 
 # ---- Operation mode ----
 # Start in handheld mode to reduce the game's rendering load on an iPhone; Console/Docked remains selectable in the launcher.

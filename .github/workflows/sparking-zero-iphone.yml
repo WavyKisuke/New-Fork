@@ -169,7 +169,7 @@ jobs:
           python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd
 
       - name: Restore persistent shader cache
-        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
+        if: ${{ inputs.mode == 'build' }}
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/nxnative-work/shader
@@ -206,6 +206,7 @@ jobs:
           python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
             --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
             --platform ios \
+            --4gb \
             --work-dir "$RUNNER_TEMP/nxnative-work" \
             --out "$RUNNER_TEMP/Sparking-ZERO-iPhone-4GB.ipa" \
             --progress lines

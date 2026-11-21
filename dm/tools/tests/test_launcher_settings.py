@@ -31,6 +31,11 @@ def rows_with_languages(listed):   # the settings rows, by variable, of a game w
 
 
 class LauncherSettingsTests(unittest.TestCase):
+    def test_iphone_defaults_to_handheld_and_keeps_docked_option(self):
+        ios = build(BOTW, 'nvn', 'ios')
+        self.assertEqual(ios['DM_OPMODE']['default'], '0')
+        self.assertEqual(ios['DM_OPMODE']['options'], [['1', 'Docked'], ['0', 'Handheld']])
+
     def test_game_language_row_offers_the_games_own_or_every_language_when_unknown(self):
         self.assertNotIn('DM_LANG', rows_with_languages(['ja']))   # one language: nothing to pick
         s = rows_with_languages(['en-US', 'ja'])['DM_LANG']

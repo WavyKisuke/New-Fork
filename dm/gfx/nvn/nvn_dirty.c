@@ -189,6 +189,8 @@ static void stamp_page(range_t *r, uintptr_t p) {
     // must invalidate that cached clock, as the page stays writable until the next upload protects it again.
     atomic_fetch_add(&g_now, 1);
 }
+static _Atomic int g_discarded;
+static void reuse_pages(uintptr_t a, size_t len) { if (atomic_load_explicit(&g_discarded, memory_order_relaxed)) (void)madvise((void *)a, len, MADV_FREE_REUSE); }
 // Writes by the thread that replays submissions (nvn_dirty_own_thread), by fault or as host writes into a tracked range: they are in order with the commands it replays, where a write by any other thread
 // races it (nvn_mtl.m looks at a texture's pages once a submission unless this moved). Not the pages nvn_dirty_close finds changed: another thread or the GPU wrote those
 static _Atomic(pthread_t) g_own; static _Atomic uint64_t g_own_writes;
@@ -199,6 +201,7 @@ static _Atomic uint64_t g_sparse_writes;   // writes to pages protected for a pl
 static void sparse_note(range_t *r, uintptr_t p) { _Atomic uint8_t *sp = atomic_load(&r->sparse); if (sp && atomic_exchange(&sp[p], 0)) atomic_fetch_add(&g_sparse_writes, 1); }
 static void unprotect_page(range_t *r, uintptr_t p) {   // The caller has already changed the state from PROT to BUSY
     mp(rb(r) + (p << g_shift), g_pg, PROT_READ | PROT_WRITE);
+    reuse_pages(rb(r) + (p << g_shift), g_pg);
     stamp_page(r, p); sparse_note(r, p); own_note();
     atomic_store(&r->state[p], PG_NONE);
 }
@@ -251,6 +254,7 @@ static void release_pages(range_t *r, uintptr_t p, uintptr_t q, _Atomic uint64_t
         if (took) { if (!open) { run = i; open = 1; } continue; }
         if (open) {
             mp(rb(r) + (run << g_shift), (i - run) << g_shift, PROT_READ | PROT_WRITE);
+            reuse_pages(rb(r) + (run << g_shift), (i - run) << g_shift);
             for (uintptr_t k = run; k < i; k++) { stamp_page(r, k); sparse_note(r, k); atomic_store(&r->state[k], PG_NONE); }
             if (count) atomic_fetch_add(count, i - run);
             open = 0;
@@ -439,6 +443,31 @@ void nvn_dirty_protect(const void *addr, size_t len) {
         if (!took && i <= q && st == PG_BUSY && busy_wait(r, i)) i--;   // this page again
     }
     pthread_mutex_unlock(&g_slot_mu);
+}
+// Give whole protected pages back to the system; a later write faults and marks the pages reusable again.
+size_t nvn_dirty_discard(const void *addr, size_t len, size_t *failed) {
+    size_t done = 0; *failed = 0;
+    uintptr_t pg = g_pg, a = ((uintptr_t)addr + pg - 1) & ~(pg - 1), e = ((uintptr_t)addr + len) & ~(pg - 1);
+    if (!len || !pg || e <= a) return 0;
+    atomic_store(&g_discarded, 1);
+    pthread_mutex_lock(&g_slot_mu);
+    range_t *r = find_span(a, e - a);
+    if (!r) { pthread_mutex_unlock(&g_slot_mu); return 0; }
+    uintptr_t p = (a - rb(r)) >> g_shift, q = (e - 1 - rb(r)) >> g_shift, run = 0; int open = 0;
+    for (uintptr_t i = p; i <= q + 1; i++) {
+        uint8_t st = PG_PROT; int took = i <= q && atomic_compare_exchange_strong(&r->state[i], &st, PG_BUSY);
+        if (took && !open) { run = i; open = 1; }
+        if (!took && open) {
+            uintptr_t ra = rb(r) + (run << g_shift); size_t rl = (i - run) << g_shift;
+            mp(ra, rl, PROT_READ | PROT_WRITE);
+            if (madvise((void *)ra, rl, MADV_FREE_REUSABLE)) *failed += rl; else done += rl;
+            mp(ra, rl, PROT_READ);
+            for (uintptr_t k = run; k < i; k++) atomic_store(&r->state[k], PG_PROT);
+            open = 0;
+        }
+    }
+    pthread_mutex_unlock(&g_slot_mu);
+    return done;
 }
 // As nvn_dirty_protect, for the pages behind a placement sparse tile: a write to one of them moves nvn_dirty_sparse_writes, which nothing else moves, so its textures need no look at their tiles
 // until one is written (the page table's walk per look is what this replaces; nvn_mtl.m sparse_look)

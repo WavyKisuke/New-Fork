@@ -26,6 +26,8 @@ int main(void) { @autoreleasepool {
         {0, {2,1,0,2}, 1, 255, "empty scissor writes nothing"},
         {0, {-1,-1,3,3}, 1, 15, "negative scissor origin is clamped"},
         {0, {0,0,8,8}, 1, 255, "full clear remains a load action"},
+        {0, {0,0,8,8}, 1, 15, "outside-pass full depth clear with a masked stencil: depth by the load action, stencil by the triangle"},
+        {1, {0,0,8,8}, 1, 15, "inside-pass full depth clear with a masked stencil: both by the triangle"},
         {0, {0,0,8,8}, 0, 0, "new texture initialization zeros both planes"},
     };
     for (unsigned i=0; i<sizeof cases/sizeof *cases; i++) {
@@ -51,7 +53,7 @@ int main(void) { @autoreleasepool {
         ops.clear=(p_clear_ds){.depth=.25, .depth_mask=cases[i].depth, .stencil=0x3c, .stencil_mask=cases[i].mask};
         ops.end=(op_hdr){OP_END,sizeof(op_hdr)};
         int zero_init = i == sizeof cases/sizeof *cases - 1;
-        if (zero_init) tex_zero_fill(base); else mtl_exec((const uint8_t *)&ops);
+        if (zero_init) tex_zero_fill(base, 0); else mtl_exec((const uint8_t *)&ops);
         mtl_sub_commit(); mtl_drain();
         CHECK(!mtl_last_commit_error(), "production clear completes without GPU error");
         id<MTLTexture> stencil = [base newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8];

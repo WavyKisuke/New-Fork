@@ -14,7 +14,7 @@ spec = importlib.util.spec_from_file_location('launcher_settings', ROOT / 'dm/ga
 settings = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(settings)
 
-BOTW, WONDER = '01007EF00011E000', '010015100B514000'
+BOTW, WONDER, DREAD = '01007EF00011E000', '010015100B514000', '010093801237C000'
 PERFORMANCE_NVN = ['DM_PRESENT_SNAP', 'DM_PSO_MTL4', 'DM_PSO_PREBUILD', 'DM_NVN_ENC_THREAD', 'DM_FPS_HOLD', 'DM_METAL_HUD']
 
 
@@ -25,7 +25,20 @@ def build(gid, api, platform=None):
         return {s['env']: s for s in settings.build(gid, tmp, Path(tmp) / 'control.nacp')['settings']}
 
 
+def rows_with_languages(listed):   # the settings rows, by variable, of a game whose control data lists these languages
+    with tempfile.TemporaryDirectory() as tmp, patch.object(settings.nacp, 'languages', return_value=listed), patch.dict(os.environ, {'GFXAPI': 'nvn', 'DM_LANG': 'en-US'}):
+        return {s['env']: s for s in settings.build(BOTW, tmp, Path(tmp) / 'control.nacp')['settings']}
+
+
 class LauncherSettingsTests(unittest.TestCase):
+    def test_game_language_row_offers_the_games_own_or_every_language_when_unknown(self):
+        self.assertNotIn('DM_LANG', rows_with_languages(['ja']))   # one language: nothing to pick
+        s = rows_with_languages(['en-US', 'ja'])['DM_LANG']
+        self.assertEqual((s['options'], s['note']), ([['en-US', 'American English'], ['ja', 'Japanese']], ''))
+        s = rows_with_languages([])['DM_LANG']   # no control data: a dump, a NUP without a NACP
+        self.assertEqual(s['options'], [list(l) for l in settings.nacp.LANGUAGES])
+        self.assertEqual((s['default'], s['note']), ('en-US', settings.UNKNOWN_LANGUAGES))
+
     def test_upscaling_is_opt_in_for_every_graphics_api(self):
         for api, gid in [('nvn', BOTW), ('vulkan', '0100535012974000'), ('gl', '010014E00DB56000')]:
             with self.subTest(api=api):
@@ -53,6 +66,16 @@ class LauncherSettingsTests(unittest.TestCase):
         self.assertNotIn('DM_FPS_HOLD', wonder)   # no frame step, as the Frame rate row
         self.assertIn('first start', botw['DM_PSO_PREBUILD']['note'])   # it runs once in the prepare step, before the first frame
 
+    def test_host_frame_cap_row_is_for_games_verified_to_step_by_elapsed_time(self):   # DM_FPS (Auto / 30): fps_cap 1 (Dread only), never with the DM_FPS_TARGET row
+        dread = build(DREAD, 'nvn')
+        self.assertNotIn('DM_FPS_TARGET', dread)
+        s = dread['DM_FPS']
+        self.assertEqual((s['kind'], s['section'], s['default'], s['options']), ('choice', 'Game', '0', [['0', 'Auto'], ['30', '30 fps']]))
+        for api, gid in [('nvn', BOTW), ('nvn', WONDER)]:
+            with self.subTest(gid=gid):
+                rows = build(gid, api)
+                self.assertNotIn('DM_FPS', rows)
+
     def test_hold_frames_takes_on_and_off(self):   # the host reads DM_FPS_HOLD as on / off (hle_nvn.c), not 1 / 0
         s = build(BOTW, 'nvn')['DM_FPS_HOLD']
         self.assertEqual((s['on'], s['off'], s['default']), ('on', 'off', 'on'))
@@ -62,9 +85,9 @@ class LauncherSettingsTests(unittest.TestCase):
     def test_iphone_switches_only_on_the_iphone(self):   # the frame-rate counter and touch feedback are the iOS front end's (front_ios.m, DmGamepad.m)
         ios, mac = build(BOTW, 'nvn'), build(BOTW, 'nvn', 'mac')
         self.assertEqual(build(BOTW, 'nvn', 'ios').keys(), ios.keys())   # ios when unset
-        self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS'})
+        self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS', 'DM_MOTION', 'DM_PICTURE_FIT'})
         self.assertIn('DM_RUMBLE', mac); self.assertIn('DM_METAL_HUD', mac)
-        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN'})   # the Mac window's Display mode (front_mac.m reads 1 or 0)
+        self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_SW2'})   # the Mac window's Display mode (front_mac.m reads 1 or 0); Switch 2 controllers (pad_switch2_apple.m, wired on the Mac only)
         s = mac['DM_FULLSCREEN']
         self.assertEqual((s['kind'], s['default'], s['options'], s['level']), ('choice', '0', [['0', 'Window'], ['1', 'Fullscreen']], 'basic'))
 
@@ -147,6 +170,15 @@ class LauncherSettingsTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 profile = type('Profile', (), {'id': BOTW, 'get': lambda self, key, default='', bad=bad: bad})()
                 with self.assertRaises(SystemExit): settings.render_base(profile)
+
+    def test_render_scale_reaches_the_stubs_largest_scale(self):
+        """The rewriter writes a render-scale stub's largest scale as RENDER_SCALE: 1 keeps the table's range (a stub that only lowers the size), 3 raises its top (Hades II)"""
+        for value, top in (('1', 1.0), ('3', 3.0)):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(settings.nacp, 'languages', return_value=['en-US']), patch.dict(os.environ, {'GFXAPI': 'nvn'}):
+                (Path(tmp) / 'main.fixups.tsv').write_text(f'# RENDER_SCALE\t{value}\n')
+                row = {s['env']: s for s in settings.build(BOTW, tmp, Path(tmp) / 'control.nacp')['settings']}['DM_RENDER_SCALE']
+            self.assertEqual((row['min'], row['max']), (0.5, top))
 
     def test_table_format_is_strict(self):
         good = 'DM_X\ttoggle\t-\t0\talways\tGame\tX\n'

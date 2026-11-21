@@ -1,8 +1,6 @@
 name: Sparking ZERO iPhone IPA
 
 on:
-  push:
-    branches: [sparking-zero-shader-fix]
   workflow_dispatch:
     inputs:
       mode:
@@ -19,8 +17,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: sparking-zero-iphone-4gb-shader-fix
-  cancel-in-progress: true
+  group: sparking-zero-iphone-upstream-integration
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -31,7 +29,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Select Xcode 27.1
-        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
+        if: ${{ inputs.mode == 'build' }}
         run: |
           set -euo pipefail
           test -d "/Applications/Xcode_27.1.app/Contents/Developer" || { echo "::error::Xcode 27.1 is not installed on this runner."; ls -d /Applications/Xcode*.app 2>/dev/null || true; exit 1; }
@@ -154,7 +152,7 @@ jobs:
           rm -f "$RUNNER_TEMP/gdrive-service-account.json"
 
       - name: Check runner capacity and toolchain
-        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
+        if: ${{ inputs.mode == 'build' }}
         run: |
           set -euo pipefail
           df -h /
@@ -171,7 +169,7 @@ jobs:
           python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd
 
       - name: Restore persistent shader cache
-        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
+        if: ${{ inputs.mode == 'build' }}
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/nxnative-work/shader
@@ -196,11 +194,10 @@ jobs:
           retention-days: 7
 
       - name: Build unsigned iPhone IPA for 4 GB devices
-        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
+        if: ${{ inputs.mode == 'build' }}
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
-          # This is an iPhone IPA build: generate iOS Metal libraries only.
-      # EA BIG4/EASF shader readers are vendored under dm/gfx/tools/easf/.
+          # iPhone IPA: use the EA shader readers and build iOS Metal libraries only.
           # Keep the macOS runner/Xcode toolchain, but skip unused macOS metallib compilation.
           DMSH_TARGETS: ios
         run: |
@@ -209,13 +206,13 @@ jobs:
           python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
             --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
             --platform ios \
-            --older-iphone 128 \
+            --4gb \
             --work-dir "$RUNNER_TEMP/nxnative-work" \
             --out "$RUNNER_TEMP/Sparking-ZERO-iPhone-4GB.ipa" \
             --progress lines
 
       - name: Upload iPhone IPA
-        if: ${{ inputs.mode == 'build' || github.event_name == 'push' }}
+        if: ${{ inputs.mode == 'build' }}
         uses: actions/upload-artifact@v4
         with:
           name: Sparking-ZERO-iPhone-4GB-IPA

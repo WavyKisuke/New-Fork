@@ -36,7 +36,9 @@ sys_resource	0x1e00000
 
 # ---- Frame rate ----
 # 60 fps (30 on the Switch): the host writes rhi.SyncInterval 1 and GEngine->FixedFrameRate 60 (dm/tools/ue_fixed_rate.py), which the engine steps the battles by; see the note's Frame rate
+fps_target	60
 # 120 on the Mac when chosen: under test (the note's Frame rate)
+fps_max	120
 
 # ---- Input ----
 # a 3D arena whose camera follows the fight, many buttons (D-pad, both sticks)

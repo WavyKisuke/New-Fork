@@ -3,4 +3,5 @@ t_fmt_mtl
 *.dSYM
 asan/
 cov/
-t_bcdec
+t_bc2astc
+bench_bc2astc_dread

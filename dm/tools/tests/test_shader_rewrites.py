@@ -208,9 +208,9 @@ class TypedOutputs(unittest.TestCase):   # dmsh_entry.fs_uint: main0_u for every
             with self.subTest(body=body): self.assertIn('fragment main0_out_u main0_u(main0_in in [[stage_in]], ', fs_uint(self.source(body, extra)))
 
     def test_sparking_zero_virtual_texture_page_table(self):   # flat page-table value passed through beside constant zeroes (issue #1889)
-        flat = 'struct main0_in\\n{\\n    float4 m_1 [[user(locn0), flat]];\\n};\\n\\n'
-        body = ('    float _26 = in.m_1.x;\\n    out.m_0.x = _26;\\n    out.m_0.y = 0.0;\\n'
-                '    out.m_0.z = 0.0;\\n    out.m_0.w = 0.0;')
+        flat = 'struct main0_in\n{\n    float4 m_1 [[user(locn0), flat]];\n};\n\n'
+        body = ('    float _26 = in.m_1.x;\n    out.m_0.x = _26;\n    out.m_0.y = 0.0;\n'
+                '    out.m_0.z = 0.0;\n    out.m_0.w = 0.0;')
         typed = fs_uint(self.source(body, flat))
         self.assertIn('fragment main0_out_u main0_u(', typed)
         self.assertIn('uint4 m_0_ui [[color(0), function_constant(dm_ui0)]];', typed)

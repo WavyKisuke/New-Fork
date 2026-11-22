@@ -1,6 +1,11 @@
 name: DRAGON QUEST VII Reimagined iPhone IPA
 
 on:
+  push:
+    branches:
+      - iphone-4gb-performance-modes
+    paths:
+      - .github/workflows/dragon-quest-vii-iphone.yml
   workflow_dispatch:
     inputs:
       mode:

@@ -204,7 +204,7 @@ jobs:
               # Walk ZIPs recursively: some Drive DLC bundles wrap individual NSP ZIPs
               # inside an outer ZIP. Never extract arbitrary paths; only write recognized
               # Switch package files, and enforce a bounded nesting depth and disk reserve.
-              import io
+              import io, subprocess, tempfile
 
               extracted_count = 0
               def extract_zip_packages(zip_obj, label, depth=0):
@@ -216,10 +216,12 @@ jobs:
                               and pathlib.Path(m.filename).suffix.lower() in game_ext]
                   nested = [m for m in entries if not m.is_dir()
                             and pathlib.Path(m.filename).suffix.lower() == ".zip"]
-                  print(f"Inspecting {label}: {len(entries)} entries, {len(packages)} Switch package(s), {len(nested)} nested ZIP(s).")
-                  if not packages and not nested:
+                  rar_members = [m for m in entries if not m.is_dir()
+                                 and pathlib.Path(m.filename).suffix.lower() == ".rar"]
+                  print(f"Inspecting {label}: {len(entries)} entries, {len(packages)} Switch package(s), {len(nested)} nested ZIP(s), {len(rar_members)} RAR archive(s).")
+                  if not packages and not nested and not rar_members:
                       preview = [m.filename for m in entries if not m.is_dir()][:30]
-                      print(f"  No supported package or nested ZIP in {label}; first entries: {preview}")
+                      print(f"  No supported package, nested ZIP, or RAR archive in {label}; first entries: {preview}")
                   for member in packages:
                       package_name = pathlib.PurePosixPath(member.filename).name
                       if not package_name or package_name in {".", ".."}:
@@ -239,6 +241,37 @@ jobs:
                           shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
                       extracted_count += 1
                       print(f"  Extracted {package_name} ({member.file_size:,} bytes)")
+                  for member in rar_members:
+                      if member.file_size > 4 * 1024**3:
+                          raise SystemExit(f"RAR entry is unexpectedly large in {label}: {member.filename} ({member.file_size:,} bytes).")
+                      with tempfile.TemporaryDirectory(prefix="nxnative-rar-") as temp_name:
+                          temp = pathlib.Path(temp_name)
+                          rar_path = temp / pathlib.PurePosixPath(member.filename).name
+                          with zip_obj.open(member) as source, open(rar_path, "wb") as output:
+                              shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
+                          result = subprocess.run(["unar", "-quiet", "-o", str(temp / "unpacked"), str(rar_path)],
+                                                  text=True, capture_output=True)
+                          if result.returncode:
+                              raise SystemExit(f"Could not extract RAR entry {member.filename} from {label}: {result.stderr[-2000:]}")
+                          unpacked = temp / "unpacked"
+                          rar_packages = [p for p in unpacked.rglob("*") if p.is_file() and p.suffix.lower() in game_ext]
+                          if not rar_packages:
+                              listing = [str(p.relative_to(unpacked)) for p in unpacked.rglob("*") if p.is_file()][:30]
+                              raise SystemExit(f"RAR entry contains no supported Switch package: {member.filename}; extracted files: {listing}")
+                          for source_path in rar_packages:
+                              package_name = source_path.name
+                              if package_name in names:
+                                  raise SystemExit(f"Duplicate package filename after RAR extraction: {package_name}")
+                              free_before_extract = shutil.disk_usage(root).free
+                              required_before_extract = max(5 * 1024**3, int((source_path.stat().st_size + sum(
+                                  p.stat().st_size for p in (root / "game").iterdir() if p.is_file())) * 1.5))
+                              if free_before_extract < required_before_extract:
+                                  raise SystemExit(f"Not enough disk space to safely extract {package_name} from {member.filename}.")
+                              names.add(package_name)
+                              destination = root / "game" / package_name
+                              shutil.copy2(source_path, destination)
+                              extracted_count += 1
+                              print(f"  Extracted {package_name} from RAR ({destination.stat().st_size:,} bytes)")
                   for member in nested:
                       if member.file_size > 2 * 1024**3:
                           raise SystemExit(f"Nested ZIP is unexpectedly large in {label}: {member.filename} ({member.file_size:,} bytes).")
@@ -289,7 +322,7 @@ jobs:
         if: ${{ inputs.mode != 'validate' }}
         run: |
           set -euo pipefail
-          brew install xcodegen zstd glslang
+          brew install xcodegen zstd glslang unar
           python -m pip install --upgrade pip
           python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd zbic
           python -c "import zbic; print('ZBIC decoder import: OK')"

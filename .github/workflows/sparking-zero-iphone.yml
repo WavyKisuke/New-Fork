@@ -94,21 +94,46 @@ jobs:
               scopes=["https://www.googleapis.com/auth/drive.readonly"])
           drive = build("drive", "v3", credentials=creds, cache_discovery=False)
 
+          # Resolve Drive shortcuts instead of silently skipping them. A shortcut can
+          # point to either a package file or a folder containing packages.
           queue, files = [(folder_id, pathlib.Path(""))], []
+          visited_folders, seen_files = set(), set()
           while queue:
               parent, rel = queue.pop(0)
+              if parent in visited_folders:
+                  continue
+              visited_folders.add(parent)
               page = None
               while True:
                   result = drive.files().list(
                       q=f"'{parent}' in parents and trashed=false",
-                      fields="nextPageToken,files(id,name,mimeType,size)",
+                      fields="nextPageToken,files(id,name,mimeType,size,shortcutDetails(targetId,targetMimeType))",
                       pageToken=page, pageSize=1000).execute()
-                  for item in result.get("files", []):
-                      child = rel / item["name"]
-                      if item["mimeType"] == "application/vnd.google-apps.folder":
+                  for listed in result.get("files", []):
+                      item = listed
+                      child = rel / listed["name"]
+                      if listed["mimeType"] == "application/vnd.google-apps.shortcut":
+                          target_id = (listed.get("shortcutDetails") or {}).get("targetId")
+                          if not target_id:
+                              print(f"WARNING: Drive shortcut has no accessible target: {child}")
+                              continue
+                          try:
+                              item = drive.files().get(
+                                  fileId=target_id,
+                                  fields="id,name,mimeType,size,shortcutDetails").execute()
+                          except Exception as exc:
+                              print(f"WARNING: Cannot resolve Drive shortcut {child}: {exc}")
+                              continue
+                          print(f"Resolved Drive shortcut: {child} -> {item.get('name', target_id)}")
+                      mime = item.get("mimeType", "")
+                      if mime == "application/vnd.google-apps.folder":
                           queue.append((item["id"], child))
-                      elif item["mimeType"] != "application/vnd.google-apps.shortcut":
-                          files.append((item, child))
+                      elif mime != "application/vnd.google-apps.shortcut":
+                          # A target may be referenced by more than one shortcut. Download
+                          # it only once to avoid duplicate package entries.
+                          if item["id"] not in seen_files:
+                              files.append((item, child))
+                              seen_files.add(item["id"])
                   page = result.get("nextPageToken")
                   if not page:
                       break

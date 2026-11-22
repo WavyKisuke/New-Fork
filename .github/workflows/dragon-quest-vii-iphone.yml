@@ -6,6 +6,7 @@ on:
       - iphone-4gb-performance-modes
     paths:
       - .github/workflows/dragon-quest-vii-iphone.yml
+      - scripts/build_ipa_from_nsp.py
   workflow_dispatch:
     inputs:
       mode:
@@ -401,3 +402,12 @@ jobs:
           path: ${{ runner.temp }}/Dragon-Quest-VII-Reimagined-iPhone-4GB.ipa
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload refreshed Dragon Quest VII shader profile
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dragon-Quest-VII-refreshed-shader-profile
+          path: ${{ runner.temp }}/nxnative-work/profile/0100A9D01C446000/
+          if-no-files-found: ignore
+          retention-days: 30

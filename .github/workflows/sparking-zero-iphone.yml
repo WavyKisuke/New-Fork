@@ -1,6 +1,11 @@
 name: Sparking ZERO iPhone IPA
 
 on:
+  push:
+    branches:
+      - iphone-4gb-performance-modes
+    paths:
+      - .github/workflows/sparking-zero-iphone.yml
   workflow_dispatch:
     inputs:
       mode:
@@ -29,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Select compatible Metal toolchain
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         run: |
           set -euo pipefail
           # Prefer the exact Xcode 27.2 compiler recorded in dmsh_chain.lock.
@@ -272,7 +277,7 @@ jobs:
           rm -f "$RUNNER_TEMP/gdrive-service-account.json"
 
       - name: Check runner capacity and toolchain
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         run: |
           set -euo pipefail
           df -h /
@@ -290,7 +295,7 @@ jobs:
           python -c "import zbic; print('ZBIC decoder import: OK')"
 
       - name: Restore persistent shader cache
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/nxnative-work/shader
@@ -315,7 +320,7 @@ jobs:
           retention-days: 7
 
       - name: Build unsigned iPhone IPA for 4 GB devices
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
           # iPhone IPA: use the EA shader readers and build iOS Metal libraries only.
@@ -336,7 +341,7 @@ jobs:
             --progress lines
 
       - name: Upload iPhone IPA
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         uses: actions/upload-artifact@v4
         with:
           name: Sparking-ZERO-iPhone-4GB-IPA
@@ -345,7 +350,7 @@ jobs:
           retention-days: 7
 
       - name: Verify Wavy23 release credentials
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         env:
           WAVY23_RELEASE_TOKEN: ${{ secrets.WAVY23_RELEASE_TOKEN }}
         run: |
@@ -356,7 +361,7 @@ jobs:
           }
 
       - name: Publish IPA to Wavy23 release
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         uses: softprops/action-gh-release@v2
         with:
           repository: WavyKisuke/Wavy23

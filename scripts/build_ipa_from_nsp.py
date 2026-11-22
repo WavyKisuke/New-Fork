@@ -3366,6 +3366,11 @@ def main(args=None):
         # any other version (no update, another update) is packed from a profile derived from it (derive_profile), with its own shaders
         pkg_ver = args.package or PACKAGE or max(have, key=vnum)
         if pkg_ver not in have: raise BuildError(f'the version to pack (-p / PACKAGE) is not in the folder, which holds {", ".join(sorted(have, key=vnum))}')
+        base_name = fam['base'].name if fam.get('base') else 'none (update-only package)'
+        update_list = ', '.join(f'v{v}: {p.name}' for v, p in sorted(fam['updates'], key=lambda x: x[0])) or 'none'
+        dlc_list = ', '.join(f'{tid:016X}: {Path(p).name}' for tid, _, p in fam['dlc']) or 'none'
+        say(f'package audit: base={base_name}; updates={update_list}; DLC={dlc_list}')
+        say(f'package selection: {pkg_ver} ({have[pkg_ver].name}) — newest available update is selected by default')
         if pkg_ver not in builds:
             registered_builds = ", ".join(f'{v} {b["display"]}' for v, b in builds.items())
             derived = f'{pkg_ver} is not a version game profile {g.id} registers ({registered_builds})'

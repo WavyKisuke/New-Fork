@@ -206,7 +206,14 @@ jobs:
                                  if not m.is_dir() and pathlib.Path(m.filename).suffix.lower() in game_ext]
                       if not members:
                           raise SystemExit(f"No .nsp, .nsz, .xci, or .xcz package found inside {archive_path.name}")
-                      print(f"Archive {archive_path.name}: found {len(members)} package file(s).")
+                      direct_size = sum(p.stat().st_size for p in (root / "game").iterdir() if p.is_file())
+                      expanded_size = direct_size + sum(m.file_size for m in members)
+                      free_before_extract = shutil.disk_usage(root).free
+                      required_before_extract = max(5 * 1024**3, int(expanded_size * 1.5))
+                      print(f"Archive {archive_path.name}: found {len(members)} package file(s), {sum(m.file_size for m in members):,} uncompressed bytes.")
+                      print(f"Free disk before extraction: {free_before_extract:,} bytes; required reserve: {required_before_extract:,} bytes.")
+                      if free_before_extract < required_before_extract:
+                          raise SystemExit(f"Not enough disk space to safely extract {archive_path.name}.")
                       for member in members:
                           package_name = pathlib.PurePosixPath(member.filename).name
                           if not package_name or package_name in {".", ".."}:

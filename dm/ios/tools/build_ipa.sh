@@ -296,4 +296,37 @@ ZS=$(gp zip_store); [ -z "${PROGRAMS_TSV:-}" ] || ZS=$(for g in $(prog_rows | cu
 PACK_OPTS=(--store "$ZS"); [ -n "${PSO:-}" ] || [ "${IOS_PULL:-1}" = 1 ] || PACK_OPTS+=(--skip-suffix _bp.metallib)
 [ "${DM_SHADER_FILES:-0}" != 1 ] || PACK_OPTS+=(--shader-files)
 python3 tools/pack_ipa.py "$OUT_IPA" "${PACK_OPTS[@]}" "${SKIP[@]}" "${MAPS[@]}" || die "pack_ipa"
+
+# Verify the finished IPA, not just the staging folders. Catch a missing launcher
+# (the mode selector) and DLC that was extracted but not packed into the bundle.
+python3 - "$OUT_IPA" "$AOC" <<'PY'
+import json, pathlib, sys, zipfile
+ipa, aoc = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]) if sys.argv[2] else None
+with zipfile.ZipFile(ipa) as z:
+    names = set(z.namelist())
+    launcher_paths = ("Payload/DmIOS.app/dm/launcher.json",
+                      "Payload/DmIOS.app/dm/p0/launcher.json")
+    launcher = next((p for p in launcher_paths if p in names), None)
+    if not launcher:
+        raise SystemExit("[RED] IPA verification: dm/launcher.json is missing; the in-game mode/settings selector cannot appear")
+    try:
+        settings = json.loads(z.read(launcher)).get("settings", [])
+    except Exception as e:
+        raise SystemExit(f"[RED] IPA verification: cannot read {launcher}: {e}")
+    if not settings:
+        raise SystemExit("[RED] IPA verification: launcher.json has no settings")
+    if not any(s.get("env") == "DM_OPMODE" for s in settings):
+        raise SystemExit("[RED] IPA verification: launcher.json has no DM_OPMODE entry (Handheld/Console selector missing)")
+    print(f"IPA verification: launcher settings present ({len(settings)}), Handheld/Console selector present")
+    expected_dlc = bool(aoc and aoc.is_dir() and any(aoc.iterdir()))
+    bundled_dlc = any(n.startswith("Payload/DmIOS.app/aoc/") and not n.endswith("/") for n in names)
+    if expected_dlc and not bundled_dlc:
+        raise SystemExit("[RED] IPA verification: DLC was extracted but no aoc content was packed into the IPA")
+    if bundled_dlc:
+        print("IPA verification: DLC content is present in Payload/DmIOS.app/aoc/")
+    elif expected_dlc:
+        raise SystemExit("[RED] IPA verification: expected DLC files are missing")
+    else:
+        print("IPA verification: no DLC input was supplied")
+PY
 t "done: $OUT_IPA ($(du -h "$OUT_IPA" | cut -f1))"

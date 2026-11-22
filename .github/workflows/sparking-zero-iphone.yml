@@ -252,6 +252,8 @@ jobs:
             --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
             --platform ios \
             --4gb \
+            --require-update \
+            --require-dlc \
             $NXNATIVE_METAL_ARGS \
             --work-dir "$RUNNER_TEMP/nxnative-work" \
             --out "$RUNNER_TEMP/Sparking-ZERO-iPhone-4GB.ipa" \

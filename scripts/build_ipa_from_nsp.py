@@ -3370,7 +3370,7 @@ def main(args=None):
         update_list = ', '.join(f'v{v}: {p.name}' for v, p in sorted(fam['updates'], key=lambda x: x[0])) or 'none'
         dlc_list = ', '.join(f'{tid:016X}: {Path(p).name}' for tid, _, p in fam['dlc']) or 'none'
         say(f'package audit: base={base_name}; updates={update_list}; DLC={dlc_list}')
-        say(f'package selection: {pkg_ver} ({have[pkg_ver].name}) — newest available update is selected by default')
+        say(f'package selection: {pkg_ver} ({have[pkg_ver].name})')
         if pkg_ver not in builds:
             registered_builds = ", ".join(f'{v} {b["display"]}' for v, b in builds.items())
             derived = f'{pkg_ver} is not a version game profile {g.id} registers ({registered_builds})'

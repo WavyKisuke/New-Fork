@@ -196,36 +196,63 @@ jobs:
                       download(item, archive_path)
                       archive_paths.append(archive_path)
 
-              # Extract only recognized Switch package files from ZIPs; reject unsafe
-              # paths and duplicate basenames rather than unpacking arbitrary contents.
+              # Walk ZIPs recursively: some Drive DLC bundles wrap individual NSP ZIPs
+              # inside an outer ZIP. Never extract arbitrary paths; only write recognized
+              # Switch package files, and enforce a bounded nesting depth and disk reserve.
+              import io
+
+              extracted_count = 0
+              def extract_zip_packages(zip_obj, label, depth=0):
+                  global extracted_count
+                  if depth > 3:
+                      raise SystemExit(f"ZIP nesting is deeper than supported in {label}.")
+                  entries = zip_obj.infolist()
+                  packages = [m for m in entries if not m.is_dir()
+                              and pathlib.Path(m.filename).suffix.lower() in game_ext]
+                  nested = [m for m in entries if not m.is_dir()
+                            and pathlib.Path(m.filename).suffix.lower() == ".zip"]
+                  print(f"Inspecting {label}: {len(entries)} entries, {len(packages)} Switch package(s), {len(nested)} nested ZIP(s).")
+                  if not packages and not nested:
+                      preview = [m.filename for m in entries if not m.is_dir()][:30]
+                      print(f"  No supported package or nested ZIP in {label}; first entries: {preview}")
+                  for member in packages:
+                      package_name = pathlib.PurePosixPath(member.filename).name
+                      if not package_name or package_name in {".", ".."}:
+                          raise SystemExit(f"Invalid package filename inside {label}: {member.filename}")
+                      if package_name in names:
+                          raise SystemExit(f"Duplicate package filename after ZIP extraction: {package_name}")
+                      free_before_extract = shutil.disk_usage(root).free
+                      required_before_extract = max(5 * 1024**3, int((member.file_size + sum(
+                          p.stat().st_size for p in (root / "game").iterdir() if p.is_file())) * 1.5))
+                      print(f"  Preparing {package_name}: {member.file_size:,} bytes; free {free_before_extract:,}; reserve {required_before_extract:,}.")
+                      if free_before_extract < required_before_extract:
+                          raise SystemExit(f"Not enough disk space to safely extract {package_name}.")
+                      names.add(package_name)
+                      destination = root / "game" / package_name
+                      destination.parent.mkdir(parents=True, exist_ok=True)
+                      with zip_obj.open(member) as source, open(destination, "wb") as output:
+                          shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
+                      extracted_count += 1
+                      print(f"  Extracted {package_name} ({member.file_size:,} bytes)")
+                  for member in nested:
+                      if member.file_size > 2 * 1024**3:
+                          raise SystemExit(f"Nested ZIP is unexpectedly large in {label}: {member.filename} ({member.file_size:,} bytes).")
+                      with zip_obj.open(member) as source:
+                          nested_bytes = source.read()
+                      try:
+                          with zipfile.ZipFile(io.BytesIO(nested_bytes)) as nested_zip:
+                              extract_zip_packages(nested_zip, f"{label} -> {member.filename}", depth + 1)
+                      except zipfile.BadZipFile:
+                          raise SystemExit(f"Nested ZIP entry is corrupt: {label} -> {member.filename}")
+
               for archive_path in archive_paths:
                   if not zipfile.is_zipfile(archive_path):
                       raise SystemExit(f"Drive file has a .zip name but is not a valid ZIP archive: {archive_path.name}")
                   with zipfile.ZipFile(archive_path) as archive:
-                      members = [m for m in archive.infolist()
-                                 if not m.is_dir() and pathlib.Path(m.filename).suffix.lower() in game_ext]
-                      if not members:
-                          raise SystemExit(f"No .nsp, .nsz, .xci, or .xcz package found inside {archive_path.name}")
-                      direct_size = sum(p.stat().st_size for p in (root / "game").iterdir() if p.is_file())
-                      expanded_size = direct_size + sum(m.file_size for m in members)
-                      free_before_extract = shutil.disk_usage(root).free
-                      required_before_extract = max(5 * 1024**3, int(expanded_size * 1.5))
-                      print(f"Archive {archive_path.name}: found {len(members)} package file(s), {sum(m.file_size for m in members):,} uncompressed bytes.")
-                      print(f"Free disk before extraction: {free_before_extract:,} bytes; required reserve: {required_before_extract:,} bytes.")
-                      if free_before_extract < required_before_extract:
-                          raise SystemExit(f"Not enough disk space to safely extract {archive_path.name}.")
-                      for member in members:
-                          package_name = pathlib.PurePosixPath(member.filename).name
-                          if not package_name or package_name in {".", ".."}:
-                              raise SystemExit(f"Invalid package filename inside {archive_path.name}: {member.filename}")
-                          if package_name in names:
-                              raise SystemExit(f"Duplicate package filename after ZIP extraction: {package_name}")
-                          names.add(package_name)
-                          destination = root / "game" / package_name
-                          destination.parent.mkdir(parents=True, exist_ok=True)
-                          with archive.open(member) as source, open(destination, "wb") as output:
-                              shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
-                          print(f"  Extracted {package_name} ({member.file_size:,} bytes)")
+                      extract_zip_packages(archive, archive_path.name)
+
+              if extracted_count == 0:
+                  raise SystemExit("No supported Switch package files were found in the Drive ZIP archives, including nested ZIPs. Check the logged archive entry names.");
 
               package_files = [p for p in (root / "game").iterdir() if p.is_file() and p.suffix.lower() in game_ext]
               if not package_files:

@@ -3155,6 +3155,8 @@ def parse_args(argv):
     older.add_argument('--6gb', dest='older_iphone', action='store_const', const='512', help='6 GB iPhone preset (not configured in this branch)')
     older.add_argument('--8gb', dest='older_iphone', action='store_const', const='', help='8 GB or more; no older-iPhone switches')
     ap.add_argument('--survey-only', action='store_true', help='a game with no profile: only the survey, no provisional profile and no IPA')
+    ap.add_argument('--require-update', action='store_true', help='stop before extraction unless the input folder contains at least one update for the selected base game')
+    ap.add_argument('--require-dlc', action='store_true', help='stop before extraction unless the input folder contains at least one DLC package for the selected base game')
     ap.add_argument('--program', type=int, default=None, help='a multi-program application (Super Mario 3D All-Stars): pack program N of the NSPs as a game of its own, title ID = the application\'s + N (default: the PROGRAM_INDEX setting, 0; a game whose profile lists programs packs them all as one from program 0: this is for bring-up). A NUP of several programs (a Switch 2 Edition of a Switch 1 game): program N, title ID = its program ID (default: the highest), with the other programs\' RomFS beside its own')
     ap.add_argument('--allow-damaged', action='store_true', help='a damaged NSP (files failing the NCA hash check), or files whose bytes do not start as their names promise (a .zs file that is no zstd stream): write them as read and go on instead of stopping')
     ap.add_argument('--allow-shader-regressions', action='store_true', help='shaders that translated in the game\'s previous build and fail with the current translation chain: '
@@ -3328,6 +3330,10 @@ def main(args=None):
         with package_reader(repo, keys, env) as packages:
             app, fam = scan_nsps(nsp_dir, packages.contents, int(want, 16) if want else None)
             packages.check_keys(fam)
+        if args.require_update and not fam.get('updates'):
+            raise BuildError(f'required update package is missing for game {app:016X}; refusing to build an incomplete IPA')
+        if args.require_dlc and not fam.get('dlc'):
+            raise BuildError(f'required DLC package is missing for game {app:016X}; refusing to build an incomplete IPA')
         if PROGRAM_INDEX:   # one program of a multi-program application, packed as a game of its own: its title ID names the profile and the build folder
             app += PROGRAM_INDEX; say(f'program {PROGRAM_INDEX} of the application: title ID {app:016X}')
         fam = decompress_nsz(nsp_dir, app, fam, keys, env, work_dir(args))

@@ -223,10 +223,21 @@ jobs:
           for path in \
             "$HOME/Library/Developer/Xcode/DerivedData" \
             "$HOME/Library/Developer/Xcode/Archives" \
+            "$HOME/Library/Developer/Xcode/iOS DeviceSupport" \
+            "$HOME/Library/Developer/Xcode/watchOS DeviceSupport" \
+            "$HOME/Library/Developer/Xcode/tvOS DeviceSupport" \
+            "$HOME/Library/Developer/Xcode/DocumentationCache" \
             "$HOME/Library/Developer/CoreSimulator/Devices" \
             "$HOME/Library/Developer/CoreSimulator/Caches" \
-            "$HOME/Library/Caches"; do
+            "$HOME/Library/Caches" \
+            "$HOME/.cache" \
+            "$HOME/.npm" \
+            "$HOME/.gradle/caches" \
+            "$HOME/.cargo/registry/cache" \
+            "$HOME/Library/Caches/org.swift.swiftpm" \
+            "$HOME/Library/Android/sdk/system-images"; do
             if [ -d "$path" ]; then
+              echo "Removing disposable cache: $path"
               find "$path" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
             fi
           done
@@ -234,6 +245,7 @@ jobs:
             sudo find /Library/Developer/CoreSimulator/Caches -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           fi
           brew cleanup --prune=all || true
+          brew autoremove || true
           python -m pip cache purge || true
           echo "Disk space after cleanup:"
           df -h /
@@ -265,10 +277,10 @@ jobs:
           python - <<'PY'
           import os, shutil
           free = shutil.disk_usage(os.environ["RUNNER_TEMP"]).free
-          minimum = 15 * 1024**3
+          minimum = 20 * 1024**3
           print(f"Free space after cache restore: {free / 1024**3:.1f} GiB")
           if free < minimum:
-              raise SystemExit("Less than 15 GiB remains after cache restore; refusing to start the long shader build.")
+              raise SystemExit("Less than 20 GiB remains after cache restore; refusing to start the long shader build.")
           PY
 
       - name: Generate DRAGON QUEST VII Reimagined game survey

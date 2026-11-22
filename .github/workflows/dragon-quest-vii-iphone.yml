@@ -1,11 +1,6 @@
 name: DRAGON QUEST VII Reimagined iPhone IPA
 
 on:
-  push:
-    branches:
-      - iphone-4gb-performance-modes
-    paths:
-      - '.github/workflows/dragon-quest-vii-iphone.yml'
   workflow_dispatch:
     inputs:
       mode:
@@ -262,6 +257,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Dragon-Quest-VII-Reimagined-iPhone-4GB-IPA
-          path: ${{ runner.temp }}/Sparking-ZERO-iPhone-4GB.ipa
+          path: ${{ runner.temp }}/Dragon-Quest-VII-Reimagined-iPhone-4GB.ipa
           if-no-files-found: error
           retention-days: 7

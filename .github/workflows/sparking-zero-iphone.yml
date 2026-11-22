@@ -139,8 +139,10 @@ jobs:
                       break
 
           game_ext = {".nsp", ".nsz", ".xci", ".xcz"}
-          games = [(f, rel) for f, rel in files if rel.suffix.lower() in game_ext]
-          keys = [(f, rel) for f, rel in files if rel.name.lower() == "prod.keys"]
+          # For shortcuts, rel is the shortcut's display path while item is the
+          # resolved target. Always classify and save by the target's real name.
+          games = [(f, rel) for f, rel in files if pathlib.Path(f.get("name", rel.name)).suffix.lower() in game_ext]
+          keys = [(f, rel) for f, rel in files if f.get("name", rel.name).lower() == "prod.keys"]
           if len(keys) != 1:
               raise SystemExit(f"Expected exactly one prod.keys in the Drive folder; found {len(keys)}.")
           if not games:
@@ -151,7 +153,7 @@ jobs:
           print(f"Total game package size: {total:,} bytes.")
           print("Package names:")
           for f, rel in games:
-              print(f"  {rel.name} ({int(f.get('size', 0)):,} bytes)")
+              print(f"  {f.get('name', rel.name)} (Drive path: {rel}; {int(f.get('size', 0)):,} bytes)")
 
           def download(item, destination):
               destination.parent.mkdir(parents=True, exist_ok=True)
@@ -178,7 +180,10 @@ jobs:
               names = set()
               for item, rel in games:
                   # NXNative expects one game's NSP/XCI package files together in one directory.
-                  name = rel.name
+                  # A Drive shortcut's alias may have no extension or a misleading name.
+                  name = pathlib.Path(item.get("name", rel.name)).name
+                  if pathlib.Path(name).suffix.lower() not in game_ext:
+                      raise SystemExit(f"Resolved game shortcut has an unsupported target filename: {name}")
                   if name in names:
                       raise SystemExit(f"Duplicate package filename in Drive subfolders: {name}")
                   names.add(name)

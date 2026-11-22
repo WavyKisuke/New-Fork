@@ -267,3 +267,35 @@ jobs:
           path: ${{ runner.temp }}/Sparking-ZERO-iPhone-4GB.ipa
           if-no-files-found: error
           retention-days: 7
+
+      - name: Verify Wavy23 release credentials
+        if: ${{ inputs.mode == 'build' }}
+        env:
+          WAVY23_RELEASE_TOKEN: ${{ secrets.WAVY23_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$WAVY23_RELEASE_TOKEN" || {
+            echo "::error::Add the WAVY23_RELEASE_TOKEN repository secret. It must be a fine-grained GitHub token with Contents read/write access to WavyKisuke/Wavy23."
+            exit 1
+          }
+
+      - name: Publish IPA to Wavy23 release
+        if: ${{ inputs.mode == 'build' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: WavyKisuke/Wavy23
+          token: ${{ secrets.WAVY23_RELEASE_TOKEN }}
+          tag_name: sparkingzero-4gb-build-${{ github.run_id }}
+          name: Sparking! ZERO iPhone 4GB (run #${{ github.run_number }})
+          body: |
+            Private unsigned Sparking! ZERO iPhone IPA (4 GB memory profile).
+
+            Source repository: ${{ github.repository }}
+            Source branch: ${{ github.ref_name }}
+            Source commit: ${{ github.sha }}
+            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            The IPA is published only after the build and package validation complete.
+          files: ${{ runner.temp }}/Sparking-ZERO-iPhone-4GB.ipa
+          fail_on_unmatched_files: true
+          make_latest: true

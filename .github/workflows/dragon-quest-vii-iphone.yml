@@ -348,6 +348,8 @@ jobs:
           # iPhone IPA: use the EA shader readers and build iOS Metal libraries only.
           # Keep the macOS runner/Xcode toolchain, but skip unused macOS metallib compilation.
           DMSH_TARGETS: ios
+          # Refresh only this game's stale shader tables into a temporary, build-local profile.
+          DM_REFRESH_SHADER_PROFILE: 0100A9D01C446000
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/nxnative-work"

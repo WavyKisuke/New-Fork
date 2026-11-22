@@ -213,14 +213,63 @@ jobs:
           python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd zbic
           python -c "import zbic; print('ZBIC decoder import: OK')"
 
-      - name: Restore persistent shader cache
+      - name: Reclaim unused runner storage
         if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
-        uses: actions/cache@v4
+        run: |
+          set -euo pipefail
+          echo "Disk space before cleanup:"
+          df -h /
+          xcrun simctl delete all || true
+          for path in \
+            "$HOME/Library/Developer/Xcode/DerivedData" \
+            "$HOME/Library/Developer/Xcode/Archives" \
+            "$HOME/Library/Developer/CoreSimulator/Devices" \
+            "$HOME/Library/Developer/CoreSimulator/Caches" \
+            "$HOME/Library/Caches"; do
+            if [ -d "$path" ]; then
+              find "$path" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            fi
+          done
+          if [ -d /Library/Developer/CoreSimulator/Caches ]; then
+            sudo find /Library/Developer/CoreSimulator/Caches -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
+          brew cleanup --prune=all || true
+          python -m pip cache purge || true
+          echo "Disk space after cleanup:"
+          df -h /
+
+      - name: Restore reusable Sparking ZERO shader compiler cache
+        id: sparkingzero-shader-prefill
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/nxnative-work/shader
           key: nxnative-dragonquestvii-iphone4gb-metal-override-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
           restore-keys: |
             nxnative-sparkingzero-iphone4gb-metal-override-
+
+      - name: Restore persistent Dragon Quest VII shader cache
+        id: dq7-shader-cache
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/nxnative-work/shader/cas-*.db*
+          key: nxnative-dq7-iphone4gb-shader-db-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}-${{ github.run_id }}
+          restore-keys: |
+            nxnative-dq7-iphone4gb-shader-db-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}-
+
+      - name: Verify disk headroom for shader build
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import shutil, sys
+          free = shutil.disk_usage("$RUNNER_TEMP").free
+          minimum = 15 * 1024**3
+          print(f"Free space after cache restore: {free / 1024**3:.1f} GiB")
+          if free < minimum:
+              raise SystemExit("Less than 15 GiB remains after cache restore; refusing to start the long shader build.")
+          PY
 
       - name: Generate DRAGON QUEST VII Reimagined game survey
         if: ${{ inputs.mode == 'survey' }}
@@ -256,6 +305,37 @@ jobs:
             --work-dir "$RUNNER_TEMP/nxnative-work" \
             --out "$RUNNER_TEMP/Dragon-Quest-VII-Reimagined-iPhone-4GB.ipa" \
             --progress lines
+
+      - name: Prune stale shader-cache generations before saving
+        if: ${{ always() && (github.event_name == 'push' || inputs.mode == 'build') }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob, os, re
+          root = os.path.join(os.environ["RUNNER_TEMP"], "nxnative-work", "shader")
+          paths = glob.glob(os.path.join(root, "cas-*.db"))
+          if not paths:
+              print("No shader cache database was produced.")
+              raise SystemExit(0)
+          newest = max(paths, key=os.path.getmtime)
+          print(f"Keeping newest shader cache: {os.path.basename(newest)} ({os.path.getsize(newest) / 1024**3:.2f} GiB)")
+          for path in paths:
+              if path == newest:
+                  continue
+              for suffix in ("", "-wal", "-shm", "-journal"):
+                  try:
+                      os.remove(path + suffix)
+                  except FileNotFoundError:
+                      pass
+              print(f"Removed stale cache generation: {os.path.basename(path)}")
+          PY
+
+      - name: Save Dragon Quest VII shader cache even if the IPA build fails
+        if: ${{ always() && (github.event_name == 'push' || inputs.mode == 'build') && steps.dq7-shader-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/nxnative-work/shader/cas-*.db*
+          key: ${{ steps.dq7-shader-cache.outputs.cache-primary-key }}
 
       - name: Upload iPhone IPA
         if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}

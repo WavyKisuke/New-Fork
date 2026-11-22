@@ -263,8 +263,8 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import shutil, sys
-          free = shutil.disk_usage("$RUNNER_TEMP").free
+          import os, shutil
+          free = shutil.disk_usage(os.environ["RUNNER_TEMP"]).free
           minimum = 15 * 1024**3
           print(f"Free space after cache restore: {free / 1024**3:.1f} GiB")
           if free < minimum:

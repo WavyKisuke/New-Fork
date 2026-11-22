@@ -2400,8 +2400,8 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
         if diff and derive_refresh:
             promote(derive_refresh, 'profile-refresh')
         elif diff:
-            rows = '\\n'.join(table_difference(n, g.table(n).read_bytes(), (tmp / 'tables' / n).read_bytes()) for n in diff)
-            raise BuildError(f'the split shader tables differ from game profile {g.id}\\'s:\\n{rows}\\nEither these game files are not the versions the profile registers, or shader_split.py now reads them differently and the profile\\'s tables were not split again (the split\\'s tables: {tmp / "tables"})')
+            rows = "\n".join(table_difference(n, g.table(n).read_bytes(), (tmp / 'tables' / n).read_bytes()) for n in diff)
+            raise BuildError(f"the split shader tables differ from game profile {g.id}'s:\n{rows}\nEither these game files are not the versions the profile registers, or shader_split.py now reads them differently and the profile's tables were not split again (the split's tables: {tmp / 'tables'})")
     if provisional:
         for n in names: shutil.copyfile(tmp / 'tables' / n, g.table(n))
     rmtree(kf); rmtree(outputkf); swap_in(tmp / 'pkg', pkg); rmtree(tmp)

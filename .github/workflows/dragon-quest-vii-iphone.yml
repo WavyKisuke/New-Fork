@@ -87,7 +87,7 @@ jobs:
           printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gdrive-service-account.json"
           chmod 600 "$RUNNER_TEMP/gdrive-service-account.json"
           cat > "$RUNNER_TEMP/download_drive.py" <<'PY'
-          import os, pathlib, shutil
+          import os, pathlib, shutil, zipfile
           from google.oauth2 import service_account
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaIoBaseDownload
@@ -144,19 +144,21 @@ jobs:
                       break
 
           game_ext = {".nsp", ".nsz", ".xci", ".xcz"}
-          games = [(f, rel) for f, rel in files if rel.suffix.lower() in game_ext]
-          keys = [(f, rel) for f, rel in files if rel.name.lower() == "prod.keys"]
+          archive_ext = {".zip"}
+          supported_ext = game_ext | archive_ext
+          games = [(f, rel) for f, rel in files if pathlib.Path(f.get("name", rel.name)).suffix.lower() in supported_ext]
+          keys = [(f, rel) for f, rel in files if f.get("name", rel.name).lower() == "prod.keys"]
           if len(keys) != 1:
               raise SystemExit(f"Expected exactly one prod.keys in the Drive folder; found {len(keys)}.")
           if not games:
-              raise SystemExit("No .nsp, .nsz, .xci, or .xcz game packages found in the Drive folder.")
+              raise SystemExit("No .nsp, .nsz, .xci, .xcz, or .zip game packages found in the Drive folder.")
 
           total = sum(int(f.get("size", 0)) for f, _ in games)
-          print(f"Drive access confirmed: {len(games)} game package(s), one prod.keys.")
-          print(f"Total game package size: {total:,} bytes.")
-          print("Package names:")
+          print(f"Drive access confirmed: {len(games)} game package/archive file(s), one prod.keys.")
+          print(f"Total downloaded package/archive size: {total:,} bytes.")
+          print("Package/archive names:")
           for f, rel in games:
-              print(f"  {rel.name} ({int(f.get('size', 0)):,} bytes)")
+              print(f"  {f.get('name', rel.name)} (Drive path: {rel}; {int(f.get('size', 0)):,} bytes)")
 
           def download(item, destination):
               destination.parent.mkdir(parents=True, exist_ok=True)
@@ -181,14 +183,54 @@ jobs:
               if free < required:
                   raise SystemExit("Not enough free runner disk space for the game packages plus extraction/build working files.")
               names = set()
+              archive_paths = []
               for item, rel in games:
-                  # NXNative expects one game's NSP/XCI package files together in one directory.
-                  name = rel.name
+                  name = pathlib.Path(item.get("name", rel.name)).name
+                  suffix = pathlib.Path(name).suffix.lower()
+                  if suffix not in supported_ext:
+                      raise SystemExit(f"Resolved Drive shortcut has an unsupported target filename: {name}")
                   if name in names:
-                      raise SystemExit(f"Duplicate package filename in Drive subfolders: {name}")
+                      raise SystemExit(f"Duplicate package/archive filename in Drive subfolders: {name}")
                   names.add(name)
-                  download(item, root / "game" / name)
-              print("All game packages downloaded and ready for NXNative.")
+                  if suffix in game_ext:
+                      download(item, root / "game" / name)
+                  else:
+                      archive_path = root / "archives" / name
+                      download(item, archive_path)
+                      archive_paths.append(archive_path)
+
+              # Extract only supported Switch package files from ZIP archives.
+              for archive_path in archive_paths:
+                  if not zipfile.is_zipfile(archive_path):
+                      raise SystemExit(f"Drive file has a .zip name but is not a valid ZIP archive: {archive_path.name}")
+                  with zipfile.ZipFile(archive_path) as archive:
+                      members = [m for m in archive.infolist()
+                                 if not m.is_dir() and pathlib.Path(m.filename).suffix.lower() in game_ext]
+                      if not members:
+                          raise SystemExit(f"No .nsp, .nsz, .xci, or .xcz package found inside {archive_path.name}")
+                      expanded_size = sum(p.stat().st_size for p in (root / "game").iterdir() if p.is_file())
+                      expanded_size += sum(m.file_size for m in members)
+                      free = shutil.disk_usage(root).free
+                      required = max(5 * 1024**3, int(expanded_size * 1.5))
+                      print(f"Archive {archive_path.name}: {len(members)} package file(s), {sum(m.file_size for m in members):,} uncompressed bytes.")
+                      print(f"Free disk before extraction: {free:,} bytes; required reserve: {required:,} bytes.")
+                      if free < required:
+                          raise SystemExit(f"Not enough disk space to safely extract {archive_path.name}.")
+                      for member in members:
+                          package_name = pathlib.PurePosixPath(member.filename).name
+                          if not package_name or package_name in {".", ".."} or package_name in names:
+                              raise SystemExit(f"Invalid or duplicate package filename inside {archive_path.name}: {member.filename}")
+                          names.add(package_name)
+                          destination = root / "game" / package_name
+                          destination.parent.mkdir(parents=True, exist_ok=True)
+                          with archive.open(member) as source, open(destination, "wb") as output:
+                              shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
+                          print(f"  Extracted {package_name} ({member.file_size:,} bytes)")
+
+              package_files = [p for p in (root / "game").iterdir() if p.is_file() and p.suffix.lower() in game_ext]
+              if not package_files:
+                  raise SystemExit("No usable Switch package files remained after ZIP extraction.")
+              print(f"All {len(package_files)} game package file(s) downloaded/extracted and ready for NXNative.")
           else:
               print("Validation-only mode: game packages were listed but not downloaded.")
           PY

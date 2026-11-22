@@ -2811,8 +2811,8 @@ OLDER_IPHONE_SIZES = ('128',)
 
 
 def older_iphone_pairs(size):
-    """4 GB iPhone settings for upstream's BC-to-ASTC path and zero-page reclamation."""
-    return {'DM_OPMODE': '0', 'DM_ZERO_PAGES': '10', 'DM_NO_BC_ASTC': 'all'}
+    """4 GB iPhone memory settings without forcing a play mode; keep the in-app mode selector available."""
+    return {'DM_ZERO_PAGES': '10', 'DM_NO_BC_ASTC': 'all'}
 
 
 def build_env_file(work, env_file, motion, older=''):

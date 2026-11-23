@@ -45,8 +45,18 @@ jobs:
             echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
             echo "METAL_CACHE_SUFFIX=xcode27.1-override" >> "$GITHUB_ENV"
             echo "::warning::Using Xcode 27.1 with the workflow's explicit Metal override."
+          elif [ -d "/Applications/Xcode-27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode-27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.2-override" >> "$GITHUB_ENV"
+            echo "::warning::Using Xcode 27.2 with the explicit Metal compatibility override."
+          elif [ -d "/Applications/Xcode_27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.2-override" >> "$GITHUB_ENV"
+            echo "::warning::Using Xcode 27.2 with the explicit Metal compatibility override."
           else
-            echo "::error::No supported Xcode 27.2 or 27.1 installation found."
+            echo "::error::No supported Xcode 27.1 or 27.2 installation found."
             ls -d /Applications/Xcode*.app 2>/dev/null || true
             exit 1
           fi

@@ -32,7 +32,7 @@ concurrency:
 jobs:
   build:
     runs-on: xcode-27
-    timeout-minutes: 180
+    timeout-minutes: 360
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -208,6 +208,13 @@ jobs:
           test -s "$RUNNER_TEMP/shader-download/$ARCHIVE" || { echo "::error::Shader release asset is missing: $TAG / $ARCHIVE"; exit 1; }
           tar -xzf "$RUNNER_TEMP/shader-download/$ARCHIVE" -C "$RUNNER_TEMP/batman-work"
           test -d "$RUNNER_TEMP/batman-work/shader" || { echo "::error::Downloaded release has no shader/ directory"; exit 1; }
+          test -n "$(find "$RUNNER_TEMP/batman-work/shader" -mindepth 1 -print -quit)" || { echo "::error::Downloaded shader cache is empty."; exit 1; }
+          if [ -d "$RUNNER_TEMP/batman-work/profile" ]; then
+            echo "DM_GAMES_DIR=$RUNNER_TEMP/batman-work/profile:$GITHUB_WORKSPACE/dm/games" >> "$GITHUB_ENV"
+            echo "DM_GAMES_FIRST=1" >> "$GITHUB_ENV"
+          else
+            echo "DM_GAMES_DIR=$GITHUB_WORKSPACE/dm/games" >> "$GITHUB_ENV"
+          fi
           echo "Restored shader cache from release $TAG; the IPA build will validate fingerprints and reuse compiled libraries."
 
       - name: Build Batman Arkham Asylum unsigned iPhone IPA

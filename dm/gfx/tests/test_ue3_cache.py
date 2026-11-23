@@ -11,9 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import shader_split
 
 
-def shader(seed, code_len=0x100):
-    """A pixel shader: a code area (graphics header, SPH stage 5) and its 0x880-byte control section"""
-    code = bytearray(code_len); code[:4] = shader_split.GFX_MAGIC; struct.pack_into('<I', code, 0x30, 5 << 10); code[0x80:0x84] = struct.pack('<I', seed)
+def shader(seed, code_len=0x100, stage=5):
+    """A shader: a code area with the given SPH stage and its 0x880-byte control section"""
+    code = bytearray(code_len); code[:4] = shader_split.GFX_MAGIC; struct.pack_into('<I', code, 0x30, stage << 10 | (1 if stage == 0 else 0)); code[0x80:0x84] = struct.pack('<I', seed)
     ctl = bytearray(0x880); ctl[:4] = shader_split.CTL_MAGIC; struct.pack_into('<I', ctl, 0x704, code_len); ctl[0x7d0:0x7e8] = bytes([seed & 0xff]) * 0x18
     return bytes(code), bytes(ctl)
 
@@ -68,6 +68,20 @@ class Ue3CacheTests(unittest.TestCase):
         got = shader_split.ue3_shaders(d, 'g.bin')
         self.assertEqual([(st, ctl, code) for _, st, ctl, code in got], [('ps', k, c) for c, k in shaders])
         self.assertTrue(all('#UE3@' in w for w, *_ in got))   # single-stage programs (separable_pairs)
+
+    def test_type_zero_ue3_vertex_is_not_a_catherine_dual_vertex(self):
+        code, ctl = shader(7, stage=0)
+        ctl = bytearray(ctl)
+        struct.pack_into('<6I', ctl, 0x748, 0x30, 0x9d0, 0, 0xb30, 0x1250, 0)
+        struct.pack_into('<I', ctl, 0x700, 0xb00)
+        d = b'BMSG' + b'\\0' * 12 + record(code, bytes(ctl))
+        got = shader_split.ue3_shaders(d, 'asylum.bin')
+        self.assertEqual(len(got), 1)
+        _, stage, normalized, parsed_code = got[0]
+        self.assertEqual(stage, 'vs')
+        self.assertEqual(parsed_code, code)
+        self.assertEqual(struct.unpack_from('<6I', normalized, 0x748), (0, 0, 0, 0, 0, 0))
+        self.assertEqual(struct.unpack_from('<I', normalized, 0x700)[0], 0xb00)  # unrelated control data stays intact
 
     def test_key_skip_masks_the_compile_information(self):
         (c1, k1), (_, k2) = shader(1), shader(2)

@@ -1,0 +1,205 @@
+name: Batman Arkham Asylum — iPhone profile survey
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Choose a game survey or a full unsigned iPhone IPA build"
+        type: choice
+        required: true
+        default: build
+        options:
+          - survey
+          - build
+
+permissions:
+  contents: read
+
+concurrency:
+  group: batman-arkham-asylum-manual-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 180
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select compatible Metal toolchain
+        if: ${{ inputs.mode == 'build' }}
+        run: |
+          set -euo pipefail
+          if [ -d "/Applications/Xcode-27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode-27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.1.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.1.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "::warning::Using Xcode 27.1 Metal compiler override; verify rendering on-device."
+          else
+            echo "::error::No supported Xcode 27.2 or 27.1 installation found."
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
+            exit 1
+          fi
+          sudo xcode-select -s "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun -sdk iphoneos metal --version
+          xcodebuild -downloadComponent MetalToolchain
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET SDK
+        if: ${{ inputs.mode == 'build' }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install Drive and NXNative dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install google-api-python-client google-auth lz4 "capstone>=5,<6" fonttools backports.zstd
+          if [ "${{ inputs.mode }}" = "build" ]; then
+            brew install xcodegen zstd glslang
+            xcodebuild -version
+            dotnet --version
+          else
+            brew install zstd
+          fi
+
+      - name: Download Batman Arkham Asylum and keys from Drive
+        env:
+          GDRIVE_FOLDER_ID: '1Eqgn7tmDjbnlU7FK2KXBI4EV39uiHQ5t'
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$GDRIVE_SERVICE_ACCOUNT_JSON" || { echo "::error::Missing GDRIVE_SERVICE_ACCOUNT_JSON secret"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/batman-input/game" "$RUNNER_TEMP/batman-input/keys"
+          printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gdrive-service-account.json"
+          chmod 600 "$RUNNER_TEMP/gdrive-service-account.json"
+          cat > "$RUNNER_TEMP/download_drive.py" <<'PY'
+          import os, pathlib, shutil
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "batman-input"
+          creds = service_account.Credentials.from_service_account_file(
+              os.path.join(os.environ["RUNNER_TEMP"], "gdrive-service-account.json"),
+              scopes=["https://www.googleapis.com/auth/drive.readonly"])
+          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+          queue, files, visited = [(os.environ["GDRIVE_FOLDER_ID"], pathlib.Path())], [], set()
+          while queue:
+              parent, rel = queue.pop(0)
+              if parent in visited:
+                  continue
+              visited.add(parent)
+              page = None
+              while True:
+                  result = drive.files().list(
+                      q=f"'{parent}' in parents and trashed=false",
+                      fields="nextPageToken,files(id,name,mimeType,size,shortcutDetails(targetId))",
+                      pageToken=page, pageSize=1000).execute()
+                  for entry in result.get("files", []):
+                      item, child = entry, rel / entry["name"]
+                      if entry["mimeType"] == "application/vnd.google-apps.shortcut":
+                          target = (entry.get("shortcutDetails") or {}).get("targetId")
+                          if not target:
+                              raise SystemExit(f"Drive shortcut target missing: {child}")
+                          item = drive.files().get(fileId=target, fields="id,name,mimeType,size").execute()
+                      if item["mimeType"] == "application/vnd.google-apps.folder":
+                          queue.append((item["id"], child))
+                      else:
+                          files.append((item, child))
+                  page = result.get("nextPageToken")
+                  if not page:
+                      break
+
+          packages = [(f,p) for f,p in files if p.suffix.lower() in {".nsp",".nsz",".xci",".xcz"}]
+          keys = [(f,p) for f,p in files if p.name.lower() == "prod.keys"]
+          if len(packages) != 1:
+              raise SystemExit(f"Expected exactly one Asylum package; found {len(packages)}")
+          if len(keys) != 1:
+              raise SystemExit(f"Expected exactly one prod.keys; found {len(keys)}")
+          package, rel = packages[0]
+          print(f"Selected game package: {rel.name} ({int(package.get('size',0)):,} bytes)")
+          print(f"Selected keys file: {keys[0][1].name} ({int(keys[0][0].get('size',0)):,} bytes)")
+          free = shutil.disk_usage(root).free
+          needed = max(12 * 1024**3, int(package.get("size",0)) * 2)
+          print(f"Free runner space: {free:,}; conservative requirement: {needed:,}")
+          if free < needed:
+              raise SystemExit("Insufficient runner disk space for the game archive and extraction workspace.")
+
+          def download(item, dest):
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              request = drive.files().get_media(fileId=item["id"])
+              with dest.open("wb") as out:
+                  transfer = MediaIoBaseDownload(out, request, chunksize=8*1024*1024)
+                  done = False
+                  while not done:
+                      status, done = transfer.next_chunk()
+                      if status:
+                          print(f"{dest.name}: {int(status.progress()*100)}%")
+          download(package, root / "game" / rel.name)
+          download(keys[0][0], root / "keys" / "prod.keys")
+          if (root / "keys" / "prod.keys").stat().st_size == 0:
+              raise SystemExit("Downloaded prod.keys is empty.")
+          PY
+          python "$RUNNER_TEMP/download_drive.py"
+          rm -f "$RUNNER_TEMP/gdrive-service-account.json"
+
+      - name: Generate Asylum title and executable survey
+        if: ${{ inputs.mode == 'survey' }}
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+        run: |
+          set -euo pipefail
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/batman-input/game" \
+            --keys "$RUNNER_TEMP/batman-input/keys/prod.keys" \
+            --survey-only \
+            --work-dir "$RUNNER_TEMP/batman-work" \
+            --progress lines
+
+      - name: Upload Asylum survey
+        if: ${{ inputs.mode == 'survey' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Batman-Arkham-Asylum-profile-survey
+          path: |
+            ${{ runner.temp }}/batman-input/game/*_survey/
+            ${{ runner.temp }}/batman-work/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build Batman Arkham Asylum unsigned iPhone IPA
+        if: ${{ inputs.mode == 'build' }}
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+          DMSH_TARGETS: ios
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/batman-work"
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/batman-input/game" \
+            --keys "$RUNNER_TEMP/batman-input/keys/prod.keys" \
+            --platform ios \
+            $NXNATIVE_METAL_ARGS \
+            --work-dir "$RUNNER_TEMP/batman-work" \
+            --out "$RUNNER_TEMP/Batman-Arkham-Asylum-iPhone.ipa" \
+            --progress lines
+
+      - name: Upload Batman Arkham Asylum iPhone IPA
+        if: ${{ inputs.mode == 'build' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Batman-Arkham-Asylum-iPhone-IPA
+          path: ${{ runner.temp }}/Batman-Arkham-Asylum-iPhone.ipa
+          if-no-files-found: error
+          retention-days: 7

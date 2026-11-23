@@ -1,0 +1,413 @@
+name: DRAGON QUEST VII Reimagined iPhone IPA
+
+on:
+  push:
+    branches:
+      - iphone-4gb-performance-modes
+    paths:
+      - .github/workflows/dragon-quest-vii-iphone.yml
+      - scripts/build_ipa_from_nsp.py
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Validate Drive, generate the game survey, or build the IPA"
+        type: choice
+        required: true
+        default: build
+        options:
+          - validate
+          - survey
+          - build
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dragon-quest-vii-iphone-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 360
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select compatible Metal toolchain
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        run: |
+          set -euo pipefail
+          # Prefer the exact Xcode 27.2 compiler recorded in dmsh_chain.lock.
+          # Hosted xcode-27 runners may only include Xcode 27.1; in that case
+          # use NXNative's explicit override and keep its shader cache isolated.
+          if [ -d "/Applications/Xcode-27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode-27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.1.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.1.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "::warning::Xcode 27.2 is unavailable. Building with the runner's Metal compiler via --allow-other-metal; shader rendering must be tested on-device."
+          else
+            echo "::error::No supported Xcode 27.2 or 27.1 installation found."
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
+            exit 1
+          fi
+          sudo xcode-select -s "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun -sdk iphoneos metal --version
+          xcodebuild -downloadComponent MetalToolchain
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET SDK
+        if: ${{ inputs.mode != 'validate' }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install Google Drive client
+        run: python -m pip install --disable-pip-version-check google-api-python-client google-auth
+
+      - name: Validate Google Drive and download files
+        env:
+          GDRIVE_FOLDER_ID: 15EmKwaerXo8uR8q5pEB-WRwnhmBrxAeo
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          BUILD_MODE: ${{ inputs.mode || 'build' }}
+        run: |
+          set -euo pipefail
+          test -n "$GDRIVE_FOLDER_ID" || { echo "::error::Missing GDRIVE_FOLDER_ID repository variable or secret"; exit 1; }
+          test -n "$GDRIVE_SERVICE_ACCOUNT_JSON" || { echo "::error::Missing GDRIVE_SERVICE_ACCOUNT_JSON secret"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/nxnative-input/game" "$RUNNER_TEMP/nxnative-input/keys"
+          printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gdrive-service-account.json"
+          chmod 600 "$RUNNER_TEMP/gdrive-service-account.json"
+          cat > "$RUNNER_TEMP/download_drive.py" <<'PY'
+          import os, pathlib, shutil, zipfile
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+
+          folder_id = os.environ["GDRIVE_FOLDER_ID"]
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "nxnative-input"
+          creds = service_account.Credentials.from_service_account_file(
+              os.path.join(os.environ["RUNNER_TEMP"], "gdrive-service-account.json"),
+              scopes=["https://www.googleapis.com/auth/drive.readonly"])
+          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+          # Resolve Drive shortcuts instead of silently skipping them. A shortcut can
+          # point to either a package file or a folder containing packages.
+          queue, files = [(folder_id, pathlib.Path(""))], []
+          visited_folders, seen_files = set(), set()
+          while queue:
+              parent, rel = queue.pop(0)
+              if parent in visited_folders:
+                  continue
+              visited_folders.add(parent)
+              page = None
+              while True:
+                  result = drive.files().list(
+                      q=f"'{parent}' in parents and trashed=false",
+                      fields="nextPageToken,files(id,name,mimeType,size,shortcutDetails(targetId,targetMimeType))",
+                      pageToken=page, pageSize=1000).execute()
+                  for listed in result.get("files", []):
+                      item = listed
+                      child = rel / listed["name"]
+                      if listed["mimeType"] == "application/vnd.google-apps.shortcut":
+                          target_id = (listed.get("shortcutDetails") or {}).get("targetId")
+                          if not target_id:
+                              print(f"WARNING: Drive shortcut has no accessible target: {child}")
+                              continue
+                          try:
+                              item = drive.files().get(
+                                  fileId=target_id,
+                                  fields="id,name,mimeType,size,shortcutDetails").execute()
+                          except Exception as exc:
+                              print(f"WARNING: Cannot resolve Drive shortcut {child}: {exc}")
+                              continue
+                          print(f"Resolved Drive shortcut: {child} -> {item.get('name', target_id)}")
+                      mime = item.get("mimeType", "")
+                      if mime == "application/vnd.google-apps.folder":
+                          queue.append((item["id"], child))
+                      elif mime != "application/vnd.google-apps.shortcut":
+                          # A target may be referenced by more than one shortcut. Download
+                          # it only once to avoid duplicate package entries.
+                          if item["id"] not in seen_files:
+                              files.append((item, child))
+                              seen_files.add(item["id"])
+                  page = result.get("nextPageToken")
+                  if not page:
+                      break
+
+          game_ext = {".nsp", ".nsz", ".xci", ".xcz"}
+          archive_ext = {".zip"}
+          supported_ext = game_ext | archive_ext
+          games = [(f, rel) for f, rel in files if pathlib.Path(f.get("name", rel.name)).suffix.lower() in supported_ext]
+          keys = [(f, rel) for f, rel in files if f.get("name", rel.name).lower() == "prod.keys"]
+          if len(keys) != 1:
+              raise SystemExit(f"Expected exactly one prod.keys in the Drive folder; found {len(keys)}.")
+          if not games:
+              raise SystemExit("No .nsp, .nsz, .xci, .xcz, or .zip game packages found in the Drive folder.")
+
+          total = sum(int(f.get("size", 0)) for f, _ in games)
+          print(f"Drive access confirmed: {len(games)} game package/archive file(s), one prod.keys.")
+          print(f"Total downloaded package/archive size: {total:,} bytes.")
+          print("Package/archive names:")
+          for f, rel in games:
+              print(f"  {f.get('name', rel.name)} (Drive path: {rel}; {int(f.get('size', 0)):,} bytes)")
+
+          def download(item, destination):
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              request = drive.files().get_media(fileId=item["id"])
+              with open(destination, "wb") as output:
+                  transfer = MediaIoBaseDownload(output, request, chunksize=8 * 1024 * 1024)
+                  done = False
+                  while not done:
+                      status, done = transfer.next_chunk()
+                      if status:
+                          print(f"{destination.name}: {int(status.progress() * 100)}%")
+
+          # Download prod.keys in both modes to verify it is accessible and nonempty.
+          download(keys[0][0], root / "keys" / "prod.keys")
+          if (root / "keys" / "prod.keys").stat().st_size == 0:
+              raise SystemExit("The downloaded prod.keys file is empty.")
+
+          if os.environ["BUILD_MODE"] != "validate":
+              free = shutil.disk_usage(root).free
+              required = max(5 * 1024**3, int(total * 2.0))
+              print(f"Runner free space: {free:,} bytes; conservative build requirement: {required:,} bytes.")
+              if free < required:
+                  raise SystemExit("Not enough free runner disk space for the game packages plus extraction/build working files.")
+              names = set()
+              archive_paths = []
+              for item, rel in games:
+                  name = pathlib.Path(item.get("name", rel.name)).name
+                  suffix = pathlib.Path(name).suffix.lower()
+                  if suffix not in supported_ext:
+                      raise SystemExit(f"Resolved Drive shortcut has an unsupported target filename: {name}")
+                  if name in names:
+                      raise SystemExit(f"Duplicate package/archive filename in Drive subfolders: {name}")
+                  names.add(name)
+                  if suffix in game_ext:
+                      download(item, root / "game" / name)
+                  else:
+                      archive_path = root / "archives" / name
+                      download(item, archive_path)
+                      archive_paths.append(archive_path)
+
+              # Extract only supported Switch package files from ZIP archives.
+              for archive_path in archive_paths:
+                  if not zipfile.is_zipfile(archive_path):
+                      raise SystemExit(f"Drive file has a .zip name but is not a valid ZIP archive: {archive_path.name}")
+                  with zipfile.ZipFile(archive_path) as archive:
+                      members = [m for m in archive.infolist()
+                                 if not m.is_dir() and pathlib.Path(m.filename).suffix.lower() in game_ext]
+                      if not members:
+                          raise SystemExit(f"No .nsp, .nsz, .xci, or .xcz package found inside {archive_path.name}")
+                      expanded_size = sum(p.stat().st_size for p in (root / "game").iterdir() if p.is_file())
+                      expanded_size += sum(m.file_size for m in members)
+                      free = shutil.disk_usage(root).free
+                      required = max(5 * 1024**3, int(expanded_size * 1.5))
+                      print(f"Archive {archive_path.name}: {len(members)} package file(s), {sum(m.file_size for m in members):,} uncompressed bytes.")
+                      print(f"Free disk before extraction: {free:,} bytes; required reserve: {required:,} bytes.")
+                      if free < required:
+                          raise SystemExit(f"Not enough disk space to safely extract {archive_path.name}.")
+                      for member in members:
+                          package_name = pathlib.PurePosixPath(member.filename).name
+                          if not package_name or package_name in {".", ".."} or package_name in names:
+                              raise SystemExit(f"Invalid or duplicate package filename inside {archive_path.name}: {member.filename}")
+                          names.add(package_name)
+                          destination = root / "game" / package_name
+                          destination.parent.mkdir(parents=True, exist_ok=True)
+                          with archive.open(member) as source, open(destination, "wb") as output:
+                              shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
+                          print(f"  Extracted {package_name} ({member.file_size:,} bytes)")
+
+              package_files = [p for p in (root / "game").iterdir() if p.is_file() and p.suffix.lower() in game_ext]
+              if not package_files:
+                  raise SystemExit("No usable Switch package files remained after ZIP extraction.")
+              print(f"All {len(package_files)} game package file(s) downloaded/extracted and ready for NXNative.")
+          else:
+              print("Validation-only mode: game packages were listed but not downloaded.")
+          PY
+          python "$RUNNER_TEMP/download_drive.py"
+          rm -f "$RUNNER_TEMP/gdrive-service-account.json"
+
+      - name: Check runner capacity and toolchain
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        run: |
+          set -euo pipefail
+          df -h /
+          xcodebuild -version
+          python --version
+          dotnet --version
+
+      - name: Install NXNative build dependencies
+        if: ${{ inputs.mode != 'validate' }}
+        run: |
+          set -euo pipefail
+          brew install xcodegen zstd glslang
+          python -m pip install --upgrade pip
+          python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd zbic
+          python -c "import zbic; print('ZBIC decoder import: OK')"
+
+      - name: Reclaim unused runner storage
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        run: |
+          set -euo pipefail
+          echo "Disk space before cleanup:"
+          df -h /
+          xcrun simctl delete all || true
+          for path in \
+            "$HOME/Library/Developer/Xcode/DerivedData" \
+            "$HOME/Library/Developer/Xcode/Archives" \
+            "$HOME/Library/Developer/Xcode/iOS DeviceSupport" \
+            "$HOME/Library/Developer/Xcode/watchOS DeviceSupport" \
+            "$HOME/Library/Developer/Xcode/tvOS DeviceSupport" \
+            "$HOME/Library/Developer/Xcode/DocumentationCache" \
+            "$HOME/Library/Developer/CoreSimulator/Devices" \
+            "$HOME/Library/Developer/CoreSimulator/Caches" \
+            "$HOME/Library/Caches" \
+            "$HOME/.cache" \
+            "$HOME/.npm" \
+            "$HOME/.gradle/caches" \
+            "$HOME/.cargo/registry/cache" \
+            "$HOME/Library/Caches/org.swift.swiftpm" \
+            "$HOME/Library/Android/sdk/system-images"; do
+            if [ -d "$path" ]; then
+              echo "Removing disposable cache: $path"
+              find "$path" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            fi
+          done
+          if [ -d /Library/Developer/CoreSimulator/Caches ]; then
+            sudo find /Library/Developer/CoreSimulator/Caches -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
+          brew cleanup --prune=all || true
+          brew autoremove || true
+          python -m pip cache purge || true
+          echo "Disk space after cleanup:"
+          df -h /
+
+      - name: Restore reusable Sparking ZERO shader compiler cache
+        id: sparkingzero-shader-prefill
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/nxnative-work/shader
+          key: nxnative-dragonquestvii-iphone4gb-metal-override-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
+          restore-keys: |
+            nxnative-sparkingzero-iphone4gb-metal-override-
+
+      - name: Restore persistent Dragon Quest VII shader cache
+        id: dq7-shader-cache
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/nxnative-work/shader/cas-*.db*
+          key: nxnative-dq7-iphone4gb-shader-db-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}-${{ github.run_id }}
+          restore-keys: |
+            nxnative-dq7-iphone4gb-shader-db-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}-
+
+      - name: Verify disk headroom for shader build
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, shutil
+          free = shutil.disk_usage(os.environ["RUNNER_TEMP"]).free
+          minimum = 20 * 1024**3
+          print(f"Free space after cache restore: {free / 1024**3:.1f} GiB")
+          if free < minimum:
+              raise SystemExit("Less than 20 GiB remains after cache restore; refusing to start the long shader build.")
+          PY
+
+      - name: Generate DRAGON QUEST VII Reimagined game survey
+        if: ${{ inputs.mode == 'survey' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nxnative-work"
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" --survey-only --work-dir "$RUNNER_TEMP/nxnative-work" --progress lines
+
+      - name: Upload game survey
+        if: ${{ inputs.mode == 'survey' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dragon-Quest-VII-Reimagined-game-survey
+          path: ${{ runner.temp }}/nxnative-input/game/*_survey/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build unsigned DRAGON QUEST VII Reimagined iPhone IPA for 4 GB devices
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+          # iPhone IPA: use the EA shader readers and build iOS Metal libraries only.
+          # Keep the macOS runner/Xcode toolchain, but skip unused macOS metallib compilation.
+          DMSH_TARGETS: ios
+          # Refresh only this game's stale shader tables into a temporary, build-local profile.
+          DM_REFRESH_SHADER_PROFILE: 0100A9D01C446000
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nxnative-work"
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
+            --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
+            --platform ios \
+            --4gb \
+            $NXNATIVE_METAL_ARGS \
+            --work-dir "$RUNNER_TEMP/nxnative-work" \
+            --out "$RUNNER_TEMP/Dragon-Quest-VII-Reimagined-iPhone-4GB.ipa" \
+            --progress lines
+
+      - name: Prune stale shader-cache generations before saving
+        if: ${{ always() && (github.event_name == 'push' || inputs.mode == 'build') }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob, os, re
+          root = os.path.join(os.environ["RUNNER_TEMP"], "nxnative-work", "shader")
+          paths = glob.glob(os.path.join(root, "cas-*.db"))
+          if not paths:
+              print("No shader cache database was produced.")
+              raise SystemExit(0)
+          newest = max(paths, key=os.path.getmtime)
+          print(f"Keeping newest shader cache: {os.path.basename(newest)} ({os.path.getsize(newest) / 1024**3:.2f} GiB)")
+          for path in paths:
+              if path == newest:
+                  continue
+              for suffix in ("", "-wal", "-shm", "-journal"):
+                  try:
+                      os.remove(path + suffix)
+                  except FileNotFoundError:
+                      pass
+              print(f"Removed stale cache generation: {os.path.basename(path)}")
+          PY
+
+      - name: Save Dragon Quest VII shader cache even if the IPA build fails
+        if: ${{ always() && (github.event_name == 'push' || inputs.mode == 'build') && steps.dq7-shader-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/nxnative-work/shader/cas-*.db*
+          key: ${{ steps.dq7-shader-cache.outputs.cache-primary-key }}
+
+      - name: Upload iPhone IPA
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dragon-Quest-VII-Reimagined-iPhone-4GB-IPA
+          path: ${{ runner.temp }}/Dragon-Quest-VII-Reimagined-iPhone-4GB.ipa
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload refreshed Dragon Quest VII shader profile
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dragon-Quest-VII-refreshed-shader-profile
+          path: ${{ runner.temp }}/nxnative-work/profile/0100A9D01C446000/
+          if-no-files-found: ignore
+          retention-days: 30

@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[3]
 GAME = '010015100B514000'
+DRY = f'clang -O2 -c main.c -o gen/{GAME}/obj/host/main.c.o\nclang -O2 -o gen/{GAME}/dmhost gen/{GAME}/obj/host/main.c.o -framework Metal\ndsymutil gen/{GAME}/dmhost\n'   # make -n's host lines
 
 
 def script(name):
@@ -165,17 +166,17 @@ class HostMSL(unittest.TestCase):
         builds = []
 
         def run(cmd, log, env=None, cwd=None):
-            if cmd[0] == 'make':
+            if f'gen/{GAME}/dmhost' in cmd:   # the host itself (make gen/<id>/dmhost), which the script copies to out
+                self.assertTrue(self.header.is_file(), 'the host build needs the header the key fingerprints')
+                builds.append(cmd)
+                built = self.root / f'dm/host/gen/{GAME}/dmhost'; built.parent.mkdir(parents=True, exist_ok=True); built.write_bytes(b'host executable')
+            else:
                 self.assertIn('host_msl', cmd)
                 p = real_run(['make', '-s', f'GAME={GAME}', 'host_msl'], cwd=cwd, env=env, capture_output=True, text=True)
                 self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-            else:
-                self.assertTrue(self.header.is_file(), 'direct clang needs the header before its first compile')
-                builds.append(cmd)
-                out.write_bytes(b'host executable')
 
         def command(cmd, **kw):
-            return NS(returncode=0, stdout='clang -o dmhost main.c\n' if cmd[0] == 'make' else 'test toolchain', stderr='')
+            return NS(returncode=0, stdout=DRY if cmd[0] == 'make' else 'test toolchain', stderr='')
 
         with patch.object(nsp, 'apple_silicon', return_value=True), patch.object(nsp, 'run', side_effect=run), patch.object(nsp.subprocess, 'run', side_effect=command):
             self.env['TEST_METAL_VERSION'] = ''
@@ -188,6 +189,48 @@ class HostMSL(unittest.TestCase):
             self.source.write_text('kernel void changed() {}\n')
             nsp.build_mac_host(self.root, out, self.env, logs, NS(id=GAME))
             self.assertEqual(len(builds), 3)
+
+    def test_decoder_identity_normalizes_only_chain_and_verifies_executable(self):
+        nsp = script('build_ipa_from_nsp')
+        self.host_dirs(nsp.HOST_DIRS)
+        out = self.root / 'packed/dmhost'; logs = self.root / 'logs'; logs.mkdir()
+        chain = self.root / nsp.CHAIN_H; chain.write_text('#define DMSH_CHAIN "aaaaaaaaaaaa"\n')
+        decoder = self.root / 'dm/host/hle_oodle.c'; decoder.write_text('void decode(void) {}\n')
+        profile = self.root / f'dm/host/gen/{GAME}/game_profile.h'; profile.parent.mkdir(parents=True); profile.write_text('#define HEAP 1\n')
+        toolchain, builds = ['compiler 1'], []
+        def run(cmd, log, env=None, cwd=None):
+            if f'gen/{GAME}/dmhost' in cmd:
+                builds.append(cmd)
+                built = self.root / f'dm/host/gen/{GAME}/dmhost'; built.parent.mkdir(parents=True, exist_ok=True); built.write_bytes(f'host {len(builds)}'.encode())
+        def command(cmd, **kw):
+            return NS(returncode=0, stdout=DRY if cmd[0] == 'make' else toolchain[0], stderr='')
+        with patch.object(nsp, 'apple_silicon', return_value=True), patch.object(nsp, 'run', side_effect=run), patch.object(nsp.subprocess, 'run', side_effect=command):
+            def build(): return nsp.build_mac_host(self.root, out, self.env, logs, NS(id=GAME))
+            build()
+            record = out.with_name(out.name + '.decoder.json')
+            self.assertTrue(record.is_file(), 'a managed host needs verified decoder provenance')
+            first = nsp.decoder_host_key(out)
+            self.assertIsNotNone(first)
+            chain.write_text('#define DMSH_CHAIN "bbbbbbbbbbbb"\n'); build()
+            self.assertEqual(nsp.decoder_host_key(out), first)
+            self.assertEqual(len(builds), 2, 'the runtime host still rebuilds for a new chain')
+            for change in (lambda: decoder.write_text('void decode(void) { fixed(); }\n'),
+                           lambda: profile.write_text('#define HEAP 2\n'),
+                           lambda: toolchain.__setitem__(0, 'compiler 2'),
+                           lambda: chain.write_text(chain.read_text() + '#define OTHER_INPUT 1\n')):
+                before = nsp.decoder_host_key(out)
+                change(); build()
+                self.assertNotEqual(nsp.decoder_host_key(out), before)
+            before = nsp.decoder_host_key(out)
+            out.write_bytes(b'replaced without rebuilding')
+            self.assertIsNone(nsp.decoder_host_key(out))
+            build(); self.assertEqual(nsp.decoder_host_key(out), before)
+            record.write_text('[]')
+            self.assertIsNone(nsp.decoder_host_key(out))
+            build(); self.assertEqual(nsp.decoder_host_key(out), before)
+            record.unlink()
+            self.assertIsNone(nsp.decoder_host_key(out))
+            build(); self.assertEqual(nsp.decoder_host_key(out), before)
 
 
 if __name__ == '__main__':

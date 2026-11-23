@@ -1,6 +1,11 @@
 name: Sparking ZERO iPhone IPA
 
 on:
+  push:
+    branches:
+      - iphone-4gb-performance-modes
+    paths:
+      - .github/workflows/sparking-zero-iphone.yml
   workflow_dispatch:
     inputs:
       mode:
@@ -17,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: sparking-zero-iphone-4gb
+  group: sparking-zero-iphone-upstream-integration
   cancel-in-progress: false
 
 jobs:
@@ -28,18 +33,32 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode 27.1
-        if: ${{ inputs.mode == 'build' }}
+      - name: Select compatible Metal toolchain
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         run: |
           set -euo pipefail
-          test -d "/Applications/Xcode_27.1.app/Contents/Developer" || { echo "::error::Xcode 27.1 is not installed on this runner."; ls -d /Applications/Xcode*.app 2>/dev/null || true; exit 1; }
-          sudo xcode-select -s "/Applications/Xcode_27.1.app/Contents/Developer"
-          xcodebuild -version > "$RUNNER_TEMP/xcode-version.txt"
-          cat "$RUNNER_TEMP/xcode-version.txt"
-          if ! grep -Fq "Xcode 27.1" "$RUNNER_TEMP/xcode-version.txt"; then
-            echo "::error::NXNative's locked Metal toolchain requires Xcode 27.1."
+          # Prefer the exact Xcode 27.2 compiler recorded in dmsh_chain.lock.
+          # Hosted xcode-27 runners may only include Xcode 27.1; in that case
+          # use NXNative's explicit override and keep its shader cache isolated.
+          if [ -d "/Applications/Xcode-27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode-27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.1.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.1.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "::warning::Xcode 27.2 is unavailable. Building with the runner's Metal compiler via --allow-other-metal; shader rendering must be tested on-device."
+          else
+            echo "::error::No supported Xcode 27.2 or 27.1 installation found."
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
             exit 1
           fi
+          sudo xcode-select -s "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun -sdk iphoneos metal --version
+          xcodebuild -downloadComponent MetalToolchain
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -55,11 +74,17 @@ jobs:
       - name: Install Google Drive client
         run: python -m pip install --disable-pip-version-check google-api-python-client google-auth
 
+      - name: Install RAR extraction utility for Drive archives
+        run: |
+          set -euo pipefail
+          brew install unar
+          command -v unar
+
       - name: Validate Google Drive and download files
         env:
           GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID || secrets.GDRIVE_FOLDER_ID }}
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
-          BUILD_MODE: ${{ inputs.mode }}
+          BUILD_MODE: ${{ inputs.mode || 'build' }}
         run: |
           set -euo pipefail
           test -n "$GDRIVE_FOLDER_ID" || { echo "::error::Missing GDRIVE_FOLDER_ID repository variable or secret"; exit 1; }
@@ -68,7 +93,7 @@ jobs:
           printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gdrive-service-account.json"
           chmod 600 "$RUNNER_TEMP/gdrive-service-account.json"
           cat > "$RUNNER_TEMP/download_drive.py" <<'PY'
-          import os, pathlib, shutil
+          import os, pathlib, shutil, zipfile
           from google.oauth2 import service_account
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaIoBaseDownload
@@ -80,39 +105,67 @@ jobs:
               scopes=["https://www.googleapis.com/auth/drive.readonly"])
           drive = build("drive", "v3", credentials=creds, cache_discovery=False)
 
+          # Resolve Drive shortcuts instead of silently skipping them. A shortcut can
+          # point to either a package file or a folder containing packages.
           queue, files = [(folder_id, pathlib.Path(""))], []
+          visited_folders, seen_files = set(), set()
           while queue:
               parent, rel = queue.pop(0)
+              if parent in visited_folders:
+                  continue
+              visited_folders.add(parent)
               page = None
               while True:
                   result = drive.files().list(
                       q=f"'{parent}' in parents and trashed=false",
-                      fields="nextPageToken,files(id,name,mimeType,size)",
+                      fields="nextPageToken,files(id,name,mimeType,size,shortcutDetails(targetId,targetMimeType))",
                       pageToken=page, pageSize=1000).execute()
-                  for item in result.get("files", []):
-                      child = rel / item["name"]
-                      if item["mimeType"] == "application/vnd.google-apps.folder":
+                  for listed in result.get("files", []):
+                      item = listed
+                      child = rel / listed["name"]
+                      if listed["mimeType"] == "application/vnd.google-apps.shortcut":
+                          target_id = (listed.get("shortcutDetails") or {}).get("targetId")
+                          if not target_id:
+                              print(f"WARNING: Drive shortcut has no accessible target: {child}")
+                              continue
+                          try:
+                              item = drive.files().get(
+                                  fileId=target_id,
+                                  fields="id,name,mimeType,size,shortcutDetails").execute()
+                          except Exception as exc:
+                              print(f"WARNING: Cannot resolve Drive shortcut {child}: {exc}")
+                              continue
+                          print(f"Resolved Drive shortcut: {child} -> {item.get('name', target_id)}")
+                      mime = item.get("mimeType", "")
+                      if mime == "application/vnd.google-apps.folder":
                           queue.append((item["id"], child))
-                      elif item["mimeType"] != "application/vnd.google-apps.shortcut":
-                          files.append((item, child))
+                      elif mime != "application/vnd.google-apps.shortcut":
+                          # A target may be referenced by more than one shortcut. Download
+                          # it only once to avoid duplicate package entries.
+                          if item["id"] not in seen_files:
+                              files.append((item, child))
+                              seen_files.add(item["id"])
                   page = result.get("nextPageToken")
                   if not page:
                       break
 
           game_ext = {".nsp", ".nsz", ".xci", ".xcz"}
-          games = [(f, rel) for f, rel in files if rel.suffix.lower() in game_ext]
-          keys = [(f, rel) for f, rel in files if rel.name.lower() == "prod.keys"]
+          archive_ext = {".zip"}
+          supported_ext = game_ext | archive_ext
+          # Drive stores the update/DLC as ZIP-wrapped packages (for example .nsp.zip).
+          games = [(f, rel) for f, rel in files if pathlib.Path(f.get("name", rel.name)).suffix.lower() in supported_ext]
+          keys = [(f, rel) for f, rel in files if f.get("name", rel.name).lower() == "prod.keys"]
           if len(keys) != 1:
               raise SystemExit(f"Expected exactly one prod.keys in the Drive folder; found {len(keys)}.")
           if not games:
-              raise SystemExit("No .nsp, .nsz, .xci, or .xcz game packages found in the Drive folder.")
+              raise SystemExit("No .nsp, .nsz, .xci, .xcz, or .zip game packages found in the Drive folder.")
 
           total = sum(int(f.get("size", 0)) for f, _ in games)
-          print(f"Drive access confirmed: {len(games)} game package(s), one prod.keys.")
-          print(f"Total game package size: {total:,} bytes.")
-          print("Package names:")
+          print(f"Drive access confirmed: {len(games)} game package/archive file(s), one prod.keys.")
+          print(f"Total downloaded package/archive size: {total:,} bytes.")
+          print("Package/archive names:")
           for f, rel in games:
-              print(f"  {rel.name} ({int(f.get('size', 0)):,} bytes)")
+              print(f"  {f.get('name', rel.name)} (Drive path: {rel}; {int(f.get('size', 0)):,} bytes)")
 
           def download(item, destination):
               destination.parent.mkdir(parents=True, exist_ok=True)
@@ -137,14 +190,125 @@ jobs:
               if free < required:
                   raise SystemExit("Not enough free runner disk space for the game packages plus extraction/build working files.")
               names = set()
+              archive_paths = []
               for item, rel in games:
-                  # NXNative expects one game's NSP/XCI package files together in one directory.
-                  name = rel.name
+                  # Use the resolved Drive target name, not a shortcut alias.
+                  name = pathlib.Path(item.get("name", rel.name)).name
+                  suffix = pathlib.Path(name).suffix.lower()
+                  if suffix not in supported_ext:
+                      raise SystemExit(f"Resolved game shortcut has an unsupported target filename: {name}")
                   if name in names:
-                      raise SystemExit(f"Duplicate package filename in Drive subfolders: {name}")
+                      raise SystemExit(f"Duplicate package/archive filename in Drive subfolders: {name}")
                   names.add(name)
-                  download(item, root / "game" / name)
-              print("All game packages downloaded and ready for NXNative.")
+                  if suffix in game_ext:
+                      download(item, root / "game" / name)
+                  else:
+                      archive_path = root / "archives" / name
+                      download(item, archive_path)
+                      archive_paths.append(archive_path)
+
+              # Walk ZIPs recursively: some Drive DLC bundles wrap individual NSP ZIPs
+              # inside an outer ZIP. Never extract arbitrary paths; only write recognized
+              # Switch package files, and enforce a bounded nesting depth and disk reserve.
+              import io, subprocess, tempfile
+
+              extracted_count = 0
+              def extract_zip_packages(zip_obj, label, depth=0):
+                  global extracted_count
+                  if depth > 3:
+                      raise SystemExit(f"ZIP nesting is deeper than supported in {label}.")
+                  entries = zip_obj.infolist()
+                  packages = [m for m in entries if not m.is_dir()
+                              and pathlib.Path(m.filename).suffix.lower() in game_ext]
+                  nested = [m for m in entries if not m.is_dir()
+                            and pathlib.Path(m.filename).suffix.lower() == ".zip"]
+                  rar_members = [m for m in entries if not m.is_dir()
+                                 and pathlib.Path(m.filename).suffix.lower() == ".rar"]
+                  print(f"Inspecting {label}: {len(entries)} entries, {len(packages)} Switch package(s), {len(nested)} nested ZIP(s), {len(rar_members)} RAR archive(s).")
+                  if not packages and not nested and not rar_members:
+                      preview = [m.filename for m in entries if not m.is_dir()][:30]
+                      print(f"  No supported package, nested ZIP, or RAR archive in {label}; first entries: {preview}")
+                  for member in packages:
+                      package_name = pathlib.PurePosixPath(member.filename).name
+                      if not package_name or package_name in {".", ".."}:
+                          raise SystemExit(f"Invalid package filename inside {label}: {member.filename}")
+                      if package_name in names:
+                          raise SystemExit(f"Duplicate package filename after ZIP extraction: {package_name}")
+                      free_before_extract = shutil.disk_usage(root).free
+                      required_before_extract = max(5 * 1024**3, int((member.file_size + sum(
+                          p.stat().st_size for p in (root / "game").iterdir() if p.is_file())) * 1.5))
+                      print(f"  Preparing {package_name}: {member.file_size:,} bytes; free {free_before_extract:,}; reserve {required_before_extract:,}.")
+                      if free_before_extract < required_before_extract:
+                          raise SystemExit(f"Not enough disk space to safely extract {package_name}.")
+                      names.add(package_name)
+                      destination = root / "game" / package_name
+                      destination.parent.mkdir(parents=True, exist_ok=True)
+                      with zip_obj.open(member) as source, open(destination, "wb") as output:
+                          shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
+                      extracted_count += 1
+                      print(f"  Extracted {package_name} ({member.file_size:,} bytes)")
+                  for member in rar_members:
+                      if member.file_size > 4 * 1024**3:
+                          raise SystemExit(f"RAR entry is unexpectedly large in {label}: {member.filename} ({member.file_size:,} bytes).")
+                      with tempfile.TemporaryDirectory(prefix="nxnative-rar-") as temp_name:
+                          temp = pathlib.Path(temp_name)
+                          rar_path = temp / pathlib.PurePosixPath(member.filename).name
+                          with zip_obj.open(member) as source, open(rar_path, "wb") as output:
+                              shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
+                          result = subprocess.run(["unar", "-quiet", "-o", str(temp / "unpacked"), str(rar_path)],
+                                                  text=True, capture_output=True)
+                          if result.returncode:
+                              raise SystemExit(f"Could not extract RAR entry {member.filename} from {label}: {result.stderr[-2000:]}")
+                          unpacked = temp / "unpacked"
+                          rar_packages = [p for p in unpacked.rglob("*") if p.is_file() and p.suffix.lower() in game_ext]
+                          if not rar_packages:
+                              listing = [str(p.relative_to(unpacked)) for p in unpacked.rglob("*") if p.is_file()][:30]
+                              raise SystemExit(f"RAR entry contains no supported Switch package: {member.filename}; extracted files: {listing}")
+                          for source_path in rar_packages:
+                              package_name = source_path.name
+                              if package_name in names:
+                                  raise SystemExit(f"Duplicate package filename after RAR extraction: {package_name}")
+                              free_before_extract = shutil.disk_usage(root).free
+                              required_before_extract = max(5 * 1024**3, int((source_path.stat().st_size + sum(
+                                  p.stat().st_size for p in (root / "game").iterdir() if p.is_file())) * 1.5))
+                              if free_before_extract < required_before_extract:
+                                  raise SystemExit(f"Not enough disk space to safely extract {package_name} from {member.filename}.")
+                              names.add(package_name)
+                              destination = root / "game" / package_name
+                              shutil.copy2(source_path, destination)
+                              extracted_count += 1
+                              print(f"  Extracted {package_name} from RAR ({destination.stat().st_size:,} bytes)")
+                  for member in nested:
+                      if member.file_size > 2 * 1024**3:
+                          raise SystemExit(f"Nested ZIP is unexpectedly large in {label}: {member.filename} ({member.file_size:,} bytes).")
+                      with zip_obj.open(member) as source:
+                          nested_bytes = source.read()
+                      try:
+                          with zipfile.ZipFile(io.BytesIO(nested_bytes)) as nested_zip:
+                              extract_zip_packages(nested_zip, f"{label} -> {member.filename}", depth + 1)
+                      except zipfile.BadZipFile:
+                          raise SystemExit(f"Nested ZIP entry is corrupt: {label} -> {member.filename}")
+
+              for archive_path in archive_paths:
+                  if not zipfile.is_zipfile(archive_path):
+                      raise SystemExit(f"Drive file has a .zip name but is not a valid ZIP archive: {archive_path.name}")
+                  with zipfile.ZipFile(archive_path) as archive:
+                      extract_zip_packages(archive, archive_path.name)
+
+              if extracted_count == 0:
+                  raise SystemExit("No supported Switch package files were found in the Drive ZIP archives, including nested ZIPs. Check the logged archive entry names.");
+
+              package_files = [p for p in (root / "game").iterdir() if p.is_file() and p.suffix.lower() in game_ext]
+              if not package_files:
+                  raise SystemExit("No usable Switch package files remained after ZIP extraction.")
+              expanded_total = sum(p.stat().st_size for p in package_files)
+              free_after_download = shutil.disk_usage(root).free
+              required_after_download = max(5 * 1024**3, int(expanded_total * 1.5))
+              print(f"Usable package files: {len(package_files)}; expanded size: {expanded_total:,} bytes.")
+              print(f"Free disk after downloads: {free_after_download:,} bytes; extraction/build reserve: {required_after_download:,} bytes.")
+              if free_after_download < required_after_download:
+                  raise SystemExit("Not enough free disk space after ZIP extraction for NXNative build working files.")
+              print("All base, update, and DLC package files are downloaded/extracted and ready for NXNative.")
           else:
               print("Validation-only mode: game packages were listed but not downloaded.")
           PY
@@ -152,7 +316,7 @@ jobs:
           rm -f "$RUNNER_TEMP/gdrive-service-account.json"
 
       - name: Check runner capacity and toolchain
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         run: |
           set -euo pipefail
           df -h /
@@ -164,18 +328,19 @@ jobs:
         if: ${{ inputs.mode != 'validate' }}
         run: |
           set -euo pipefail
-          brew install xcodegen zstd glslang
+          brew install xcodegen zstd glslang unar
           python -m pip install --upgrade pip
-          python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd
+          python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd zbic
+          python -c "import zbic; print('ZBIC decoder import: OK')"
 
       - name: Restore persistent shader cache
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/nxnative-work/shader
-          key: nxnative-sparkingzero-iphone4gb-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
+          key: nxnative-sparkingzero-iphone4gb-metal-override-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
           restore-keys: |
-            nxnative-sparkingzero-iphone4gb-
+            nxnative-sparkingzero-iphone4gb-metal-override-
 
       - name: Generate Sparking ZERO game survey
         if: ${{ inputs.mode == 'survey' }}
@@ -194,25 +359,63 @@ jobs:
           retention-days: 7
 
       - name: Build unsigned iPhone IPA for 4 GB devices
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+          # iPhone IPA: use the EA shader readers and build iOS Metal libraries only.
+          # Keep the macOS runner/Xcode toolchain, but skip unused macOS metallib compilation.
+          DMSH_TARGETS: ios
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/nxnative-work"
           python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
             --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
             --platform ios \
-            --older-iphone 128 \
+            --4gb \
+            --require-update \
+            --require-dlc \
+            $NXNATIVE_METAL_ARGS \
             --work-dir "$RUNNER_TEMP/nxnative-work" \
             --out "$RUNNER_TEMP/Sparking-ZERO-iPhone-4GB.ipa" \
             --progress lines
 
       - name: Upload iPhone IPA
-        if: ${{ inputs.mode == 'build' }}
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         uses: actions/upload-artifact@v4
         with:
           name: Sparking-ZERO-iPhone-4GB-IPA
           path: ${{ runner.temp }}/Sparking-ZERO-iPhone-4GB.ipa
           if-no-files-found: error
           retention-days: 7
+
+      - name: Verify Wavy23 release credentials
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        env:
+          WAVY23_RELEASE_TOKEN: ${{ secrets.WAVY23_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$WAVY23_RELEASE_TOKEN" || {
+            echo "::error::Add the WAVY23_RELEASE_TOKEN repository secret. It must be a fine-grained GitHub token with Contents read/write access to WavyKisuke/Wavy23."
+            exit 1
+          }
+
+      - name: Publish IPA to Wavy23 release
+        if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: WavyKisuke/Wavy23
+          token: ${{ secrets.WAVY23_RELEASE_TOKEN }}
+          tag_name: sparkingzero-4gb-build-${{ github.run_id }}
+          name: Sparking! ZERO iPhone 4GB (run #${{ github.run_number }})
+          body: |
+            Private unsigned Sparking! ZERO iPhone IPA (4 GB memory profile).
+
+            Source repository: ${{ github.repository }}
+            Source branch: ${{ github.ref_name }}
+            Source commit: ${{ github.sha }}
+            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            The IPA is published only after the build and package validation complete.
+          files: ${{ runner.temp }}/Sparking-ZERO-iPhone-4GB.ipa
+          fail_on_unmatched_files: true
+          make_latest: true

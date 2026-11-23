@@ -1,5 +1,2 @@
-# bcdec
-
-A single-header decoder for the BC1-BC7 block-compressed texture formats (BC6H and BC7 included): https://github.com/iOrange/bcdec, commit 80859ed (version 0.985), unmodified. License: `LICENSE` (MIT or the Unlicense, your choice).
-
-Used by `dm/gfx/tex/nvn_bcdec.c`: on a GPU without BC texture support the replay layer decodes BC textures on the CPU.
+Source: https://github.com/iOrange/bcdec commit 80859ed (version 0.985), unmodified. License in LICENSE (MIT or public domain, at your choice).
+Use: on GPUs without BC compressed formats, the translation layer decompresses BC textures on the CPU (dm/gfx/tex/nvn_bcdec.c).

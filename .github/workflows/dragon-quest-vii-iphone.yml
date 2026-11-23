@@ -240,6 +240,12 @@ jobs:
           else
             echo "::warning::No matching Dragon Quest shader release exists ($TAG); this build will compile shaders from scratch."
           fi
+          if [ -d "$RUNNER_TEMP/nxnative-work/profile" ]; then
+            echo "DM_GAMES_DIR=$RUNNER_TEMP/nxnative-work/profile:$GITHUB_WORKSPACE/dm/games" >> "$GITHUB_ENV"
+            echo "DM_GAMES_FIRST=1" >> "$GITHUB_ENV"
+          else
+            echo "DM_GAMES_DIR=$GITHUB_WORKSPACE/dm/games" >> "$GITHUB_ENV"
+          fi
 
       - name: Generate DRAGON QUEST VII Reimagined game survey
         if: ${{ inputs.mode == 'survey' }}
@@ -260,7 +266,6 @@ jobs:
       - name: Build unsigned DRAGON QUEST VII Reimagined iPhone IPA for 4 GB devices
         if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         env:
-          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
           # iPhone IPA: use the EA shader readers and build iOS Metal libraries only.
           # Keep the macOS runner/Xcode toolchain, but skip unused macOS metallib compilation.
           DMSH_TARGETS: ios

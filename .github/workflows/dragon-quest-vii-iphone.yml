@@ -42,24 +42,27 @@ jobs:
         if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
         run: |
           set -euo pipefail
-          # Prefer the exact Xcode 27.2 compiler recorded in dmsh_chain.lock.
-          # Hosted xcode-27 runners may only include Xcode 27.1; in that case
-          # use NXNative's explicit override and keep its shader cache isolated.
-          if [ -d "/Applications/Xcode-27.2.app/Contents/Developer" ]; then
-            DEVELOPER_DIR="/Applications/Xcode-27.2.app/Contents/Developer"
-            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
-            echo "METAL_CACHE_SUFFIX=xcode27.2" >> "$GITHUB_ENV"
-          elif [ -d "/Applications/Xcode_27.2.app/Contents/Developer" ]; then
-            DEVELOPER_DIR="/Applications/Xcode_27.2.app/Contents/Developer"
-            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
-            echo "METAL_CACHE_SUFFIX=xcode27.2" >> "$GITHUB_ENV"
+          # Match the separate shader workflow exactly so its Release cache is reusable.
+          # Both workflows prefer Xcode 27.1 with the explicit compatibility override,
+          # then fall back to Xcode 27.2 with the same override and a separate cache identity.
+          if [ -d "/Applications/Xcode-27.1.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode-27.1.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.1-override" >> "$GITHUB_ENV"
           elif [ -d "/Applications/Xcode_27.1.app/Contents/Developer" ]; then
             DEVELOPER_DIR="/Applications/Xcode_27.1.app/Contents/Developer"
             echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
             echo "METAL_CACHE_SUFFIX=xcode27.1-override" >> "$GITHUB_ENV"
-            echo "::warning::Xcode 27.2 is unavailable. Building with the runner's Metal compiler via --allow-other-metal; shader rendering must be tested on-device."
+          elif [ -d "/Applications/Xcode-27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode-27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.2-override" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.2-override" >> "$GITHUB_ENV"
           else
-            echo "::error::No supported Xcode 27.2 or 27.1 installation found."
+            echo "::error::No supported Xcode 27.1 or 27.2 installation found."
             ls -d /Applications/Xcode*.app 2>/dev/null || true
             exit 1
           fi

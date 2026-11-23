@@ -1,0 +1,217 @@
+name: DRAGON QUEST VII — compile reusable iPhone shaders
+
+on:
+  workflow_dispatch:
+    inputs:
+      shader_profile:
+        description: "Increment when the registered Dragon Quest shader profile changes"
+        type: string
+        required: true
+        default: profile-v1
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dragon-quest-vii-shaders-${{ inputs.shader_profile }}
+  cancel-in-progress: false
+
+jobs:
+  shaders:
+    runs-on: xcode-27
+    timeout-minutes: 360
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Metal toolchain
+        run: |
+          set -euo pipefail
+          if [ -d "/Applications/Xcode-27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode-27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.2" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.2" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode-27.1.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode-27.1.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.1-override" >> "$GITHUB_ENV"
+            echo "::warning::Using Xcode 27.1 with the workflow's explicit Metal override."
+          elif [ -d "/Applications/Xcode_27.1.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.1.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.1-override" >> "$GITHUB_ENV"
+            echo "::warning::Using Xcode 27.1 with the workflow's explicit Metal override."
+          else
+            echo "::error::No supported Xcode 27.2 or 27.1 installation found."
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
+            exit 1
+          fi
+          sudo xcode-select -s "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun -sdk iphoneos metal --version
+          xcodebuild -downloadComponent MetalToolchain
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install Drive and NXNative dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install google-api-python-client google-auth lz4 "capstone>=5,<6" fonttools backports.zstd
+          brew install xcodegen zstd glslang
+          xcodebuild -version
+          dotnet --version
+
+      - name: Download Dragon Quest VII game files and keys from the configured Drive folder
+        env:
+          GDRIVE_FOLDER_ID: 15EmKwaerXo8uR8q5pEB-WRwnhmBrxAeo
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$GDRIVE_SERVICE_ACCOUNT_JSON" || { echo "::error::Missing GDRIVE_SERVICE_ACCOUNT_JSON secret"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/nxnative-input/game" "$RUNNER_TEMP/nxnative-input/keys"
+          printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gdrive-service-account.json"
+          chmod 600 "$RUNNER_TEMP/gdrive-service-account.json"
+          cat > "$RUNNER_TEMP/download_drive.py" <<'PY'
+          import os, pathlib
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "nxnative-input"
+          creds = service_account.Credentials.from_service_account_file(
+              os.path.join(os.environ["RUNNER_TEMP"], "gdrive-service-account.json"),
+              scopes=["https://www.googleapis.com/auth/drive.readonly"])
+          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+          queue, files, visited, seen = [(os.environ["GDRIVE_FOLDER_ID"], pathlib.Path(""))], [], set(), set()
+          while queue:
+              parent, rel = queue.pop(0)
+              if parent in visited:
+                  continue
+              visited.add(parent)
+              page = None
+              while True:
+                  result = drive.files().list(
+                      q=f"'{parent}' in parents and trashed=false",
+                      fields="nextPageToken,files(id,name,mimeType,size,shortcutDetails(targetId))",
+                      pageToken=page, pageSize=1000).execute()
+                  for entry in result.get("files", []):
+                      item, child = entry, rel / entry["name"]
+                      if entry["mimeType"] == "application/vnd.google-apps.shortcut":
+                          target = (entry.get("shortcutDetails") or {}).get("targetId")
+                          if not target:
+                              raise SystemExit(f"Drive shortcut target missing: {child}")
+                          item = drive.files().get(fileId=target, fields="id,name,mimeType,size").execute()
+                      if item["mimeType"] == "application/vnd.google-apps.folder":
+                          queue.append((item["id"], child))
+                      elif item["id"] not in seen:
+                          files.append((item, child)); seen.add(item["id"])
+                  page = result.get("nextPageToken")
+                  if not page:
+                      break
+
+          packages = [(f,p) for f,p in files if p.suffix.lower() in {".nsp",".nsz",".xci",".xcz"}]
+          keys = [(f,p) for f,p in files if p.name.lower() == "prod.keys"]
+          if not packages:
+              raise SystemExit("No .nsp, .nsz, .xci, or .xcz game packages found.")
+          if len(keys) != 1:
+              raise SystemExit(f"Expected exactly one prod.keys; found {len(keys)}.")
+          names = set()
+          for item, rel in packages:
+              if rel.name in names:
+                  raise SystemExit(f"Duplicate package filename in Drive subfolders: {rel.name}")
+              names.add(rel.name)
+          def download(item, dest):
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              request = drive.files().get_media(fileId=item["id"])
+              with dest.open("wb") as output:
+                  transfer = MediaIoBaseDownload(output, request, chunksize=8*1024*1024)
+                  done = False
+                  while not done:
+                      status, done = transfer.next_chunk()
+                      if status: print(f"{dest.name}: {int(status.progress()*100)}%")
+          download(keys[0][0], root / "keys" / "prod.keys")
+          if (root / "keys" / "prod.keys").stat().st_size == 0:
+              raise SystemExit("Downloaded prod.keys is empty.")
+          for item, rel in packages:
+              download(item, root / "game" / rel.name)
+          print(f"Downloaded {len(packages)} Dragon Quest package(s) and prod.keys.")
+          PY
+          python "$RUNNER_TEMP/download_drive.py"
+          rm -f "$RUNNER_TEMP/gdrive-service-account.json"
+
+      - name: Validate release asset identity
+        env:
+          SHADER_PROFILE: ${{ inputs.shader_profile }}
+        run: |
+          set -euo pipefail
+          [[ "$SHADER_PROFILE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid shader_profile"; exit 1; }
+          echo "SHADER_RELEASE_TAG=dragon-quest-vii-shaders-$SHADER_PROFILE-$METAL_CACHE_SUFFIX" >> "$GITHUB_ENV"
+          echo "SHADER_ARCHIVE=Dragon-Quest-VII-Shaders-$SHADER_PROFILE-$METAL_CACHE_SUFFIX.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Restore previous Dragon Quest shader release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/shader-cache-restore" "$RUNNER_TEMP/nxnative-work"
+          if gh release view "$SHADER_RELEASE_TAG" >/dev/null 2>&1; then
+            gh release download "$SHADER_RELEASE_TAG" --pattern "$SHADER_ARCHIVE" --dir "$RUNNER_TEMP/shader-cache-restore"
+            tar -xzf "$RUNNER_TEMP/shader-cache-restore/$SHADER_ARCHIVE" -C "$RUNNER_TEMP/nxnative-work"
+            echo "Restored existing Dragon Quest shader cache."
+          else
+            echo "No prior release cache exists; this is a clean shader compilation."
+          fi
+
+      - name: Compile Dragon Quest VII iPhone shaders only
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+          DMSH_TARGETS: ios
+        run: |
+          set -euo pipefail
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
+            --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
+            --platform ios \
+            --shaders-only \
+            $NXNATIVE_METAL_ARGS \
+            --work-dir "$RUNNER_TEMP/nxnative-work" \
+            --progress lines
+          test -d "$RUNNER_TEMP/nxnative-work/shader" || { echo "::error::NXNative did not produce the shader cache directory."; exit 1; }
+          test -n "$(find "$RUNNER_TEMP/nxnative-work/shader" -mindepth 1 -print -quit)" || { echo "::error::Shader cache directory is empty."; exit 1; }
+
+      - name: Package the reusable Dragon Quest shader cache
+        run: |
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/$SHADER_ARCHIVE" -C "$RUNNER_TEMP/nxnative-work" shader
+          test -s "$RUNNER_TEMP/$SHADER_ARCHIVE"
+          shasum -a 256 "$RUNNER_TEMP/$SHADER_ARCHIVE"
+
+      - name: Publish durable Dragon Quest shader cache release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHADER_PROFILE: ${{ inputs.shader_profile }}
+        run: |
+          set -euo pipefail
+          NOTES="Reusable Dragon Quest VII iPhone shader cache. Profile: $SHADER_PROFILE. Metal toolchain: $METAL_CACHE_SUFFIX. NXNative's internal fingerprints validate cached outputs against the exact game, profile, source tools, and compiler before reuse."
+          if gh release view "$SHADER_RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$SHADER_RELEASE_TAG" "$RUNNER_TEMP/$SHADER_ARCHIVE" --clobber
+            gh release edit "$SHADER_RELEASE_TAG" --notes "$NOTES"
+          else
+            gh release create "$SHADER_RELEASE_TAG" "$RUNNER_TEMP/$SHADER_ARCHIVE" \
+              --title "$SHADER_RELEASE_TAG" \
+              --notes "$NOTES" \
+              --target "$GITHUB_SHA"
+          fi
+          gh release view "$SHADER_RELEASE_TAG" --json tagName,assets

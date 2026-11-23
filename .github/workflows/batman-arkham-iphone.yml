@@ -1,4 +1,4 @@
-name: Batman Arkham Asylum — iPhone profile survey
+name: Batman Arkham Asylum — survey / iPhone IPA build
 
 on:
   workflow_dispatch:

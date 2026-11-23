@@ -29,6 +29,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Free runner disk space before downloading game files
+        run: |
+          set -euo pipefail
+          echo "Disk space before cleanup:"
+          df -h /
+          # Remove disposable caches only; keep Xcode, the Metal toolchain, and runner tools.
+          brew cleanup -s || true
+          rm -rf "$HOME/Library/Developer/Xcode/DerivedData" "$HOME/Library/Caches/org.swift.swiftpm" || true
+          sudo rm -rf /Library/Developer/CoreSimulator/Caches || true
+          echo "Disk space after cleanup:"
+          df -h /
+
       - name: Select Metal toolchain
         run: |
           set -euo pipefail
@@ -192,6 +204,7 @@ jobs:
           fi
 
       - name: Compile Dragon Quest VII iPhone shaders only
+        timeout-minutes: 340
         env:
           DMSH_TARGETS: ios
         run: |
@@ -206,29 +219,67 @@ jobs:
           test -d "$RUNNER_TEMP/nxnative-work/shader" || { echo "::error::NXNative did not produce the shader cache directory."; exit 1; }
           test -n "$(find "$RUNNER_TEMP/nxnative-work/shader" -mindepth 1 -print -quit)" || { echo "::error::Shader cache directory is empty."; exit 1; }
 
-      - name: Package the reusable Dragon Quest shader cache
+      - name: Record compile result and cache-resume evidence
+        if: always()
         run: |
           set -euo pipefail
-          if [ -d "$RUNNER_TEMP/nxnative-work/profile" ]; then
-            tar -czf "$RUNNER_TEMP/$SHADER_ARCHIVE" -C "$RUNNER_TEMP/nxnative-work" shader profile
+          echo "Runner disk space after the compile attempt:"
+          df -h /
+          LOG="$RUNNER_TEMP/nxnative-work/logs/dmsh_build.log"
+          if [ -f "$LOG" ]; then
+            echo "Metal shader-cache evidence from dmsh_build.log:"
+            grep -E "shader cache: hit|shaders [0-9]+: ok|built with this Mac's compilers" "$LOG" | tail -n 20 || true
+            if grep -Eq "shader cache: hit [1-9][0-9]*" "$LOG"; then
+              echo "NXNative reports one or more compiled shaders restored from its cache."
+            else
+              echo "::warning::No positive shader-cache hit was recorded in this run; inspect dmsh_build.log before treating the split-run resume as successful."
+            fi
           else
-            tar -czf "$RUNNER_TEMP/$SHADER_ARCHIVE" -C "$RUNNER_TEMP/nxnative-work" shader
+            echo "::warning::dmsh_build.log was not created; compilation may have stopped before the Metal shader stage."
           fi
-          test -s "$RUNNER_TEMP/$SHADER_ARCHIVE"
-          shasum -a 256 "$RUNNER_TEMP/$SHADER_ARCHIVE"
 
-      - name: Publish durable Dragon Quest shader cache release asset
+      - name: Package reusable Dragon Quest compiled shader outputs
+        if: always()
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/nxnative-work"
+          ARCHIVE="$RUNNER_TEMP/$SHADER_ARCHIVE"
+          mkdir -p "$(dirname "$ARCHIVE")"
+          # Preserve NXNative's compiler CAS/library cache and completed iOS outputs,
+          # plus the exact game profile. Omit extracted game files, shader package,
+          # logs, and other temporary/intermediate build data.
+          paths=()
+          [ -d "$ROOT/shader/cache" ] && paths+=(shader/cache)
+          [ -d "$ROOT/shader/ios" ] && paths+=(shader/ios)
+          [ -d "$ROOT/profile" ] && paths+=(profile)
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "::warning::No reusable compiled shader output exists; nothing will be published."
+            exit 0
+          fi
+          tar -czf "$ARCHIVE" -C "$ROOT" "${paths[@]}"
+          test -s "$ARCHIVE"
+          echo "Packaged partial or complete reusable output:"
+          tar -tzf "$ARCHIVE" | head -n 40
+          shasum -a 256 "$ARCHIVE"
+
+      - name: Publish or update Dragon Quest shader release asset
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          SHADER_PROFILE: ${{ inputs.shader_profile }}
+          SHADER_PROFILE: ${{ inputs.shader_profile || 'profile-v1' }}
         run: |
           set -euo pipefail
-          NOTES="Reusable Dragon Quest VII iPhone shader cache. Profile: $SHADER_PROFILE. Metal toolchain: $METAL_CACHE_SUFFIX. NXNative's internal fingerprints validate cached outputs against the exact game, profile, source tools, and compiler before reuse."
+          ARCHIVE="$RUNNER_TEMP/$SHADER_ARCHIVE"
+          if [ ! -s "$ARCHIVE" ]; then
+            echo "No compiled shader output was saved; skipping Release publication."
+            exit 0
+          fi
+          NOTES="Reusable Dragon Quest VII iPhone shader compiler cache. Profile: $SHADER_PROFILE. Metal toolchain: $METAL_CACHE_SUFFIX. This asset may contain partial progress from a timed compile; NXNative fingerprints and its Metal compile cache determine what can be reused safely."
           if gh release view "$SHADER_RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$SHADER_RELEASE_TAG" "$RUNNER_TEMP/$SHADER_ARCHIVE" --clobber
+            gh release upload "$SHADER_RELEASE_TAG" "$ARCHIVE" --clobber
             gh release edit "$SHADER_RELEASE_TAG" --notes "$NOTES"
           else
-            gh release create "$SHADER_RELEASE_TAG" "$RUNNER_TEMP/$SHADER_ARCHIVE" \
+            gh release create "$SHADER_RELEASE_TAG" "$ARCHIVE" \
               --title "$SHADER_RELEASE_TAG" \
               --notes "$NOTES" \
               --target "$GITHUB_SHA"

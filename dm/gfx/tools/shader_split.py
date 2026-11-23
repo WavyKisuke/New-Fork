@@ -1761,6 +1761,15 @@ def ue3_shaders(d, label):
         if nctl is None or c + nctl > len(d): continue
         ctl, code = d[c:c + nctl], d[a:c]
         st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code)
+        # UE3 cache records are single-stage programs. The six words at control
+        # +0x748 are not Catherine: Full Body's VertexA/VertexB descriptor;
+        # some UE3 SDK 14 vertex records have unrelated nonzero values there.
+        # dmsh_build.vertex_ab only interprets that descriptor for the special
+        # two-part GLSLC format, so clear it for UE3 type-0 vertex records.
+        if st == 'vs' and (struct.unpack_from('<I', code, 0x30)[0] >> 10) & 0xf == 0:
+            ctl = bytearray(ctl)
+            struct.pack_into('<6I', ctl, 0x748, 0, 0, 0, 0, 0, 0)
+            ctl = bytes(ctl)
         why = check(label, st, ctl, code) if st else 'no stage in the code area header'
         if why: red(f'{label}: shader record at {c:#x} ({st}): {why}')
         out.append((f'{label}#UE3@{c:x}', st, ctl, code))

@@ -174,10 +174,15 @@ jobs:
           else
             echo "No prior release cache exists; this is a clean shader compilation."
           fi
+          if [ -d "$RUNNER_TEMP/nxnative-work/profile" ]; then
+            echo "DM_GAMES_DIR=$RUNNER_TEMP/nxnative-work/profile:$GITHUB_WORKSPACE/dm/games" >> "$GITHUB_ENV"
+            echo "DM_GAMES_FIRST=1" >> "$GITHUB_ENV"
+          else
+            echo "DM_GAMES_DIR=$GITHUB_WORKSPACE/dm/games" >> "$GITHUB_ENV"
+          fi
 
       - name: Compile Dragon Quest VII iPhone shaders only
         env:
-          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
           DMSH_TARGETS: ios
         run: |
           set -euo pipefail
@@ -194,7 +199,11 @@ jobs:
       - name: Package the reusable Dragon Quest shader cache
         run: |
           set -euo pipefail
-          tar -czf "$RUNNER_TEMP/$SHADER_ARCHIVE" -C "$RUNNER_TEMP/nxnative-work" shader
+          if [ -d "$RUNNER_TEMP/nxnative-work/profile" ]; then
+            tar -czf "$RUNNER_TEMP/$SHADER_ARCHIVE" -C "$RUNNER_TEMP/nxnative-work" shader profile
+          else
+            tar -czf "$RUNNER_TEMP/$SHADER_ARCHIVE" -C "$RUNNER_TEMP/nxnative-work" shader
+          fi
           test -s "$RUNNER_TEMP/$SHADER_ARCHIVE"
           shasum -a 256 "$RUNNER_TEMP/$SHADER_ARCHIVE"
 

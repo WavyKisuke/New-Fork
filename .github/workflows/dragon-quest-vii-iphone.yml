@@ -17,6 +17,11 @@ on:
           - validate
           - survey
           - build
+      shader_profile:
+        description: "Must match the profile revision used by the separate shader workflow"
+        type: string
+        required: true
+        default: profile-v1
 
 permissions:
   contents: read
@@ -43,12 +48,15 @@ jobs:
           if [ -d "/Applications/Xcode-27.2.app/Contents/Developer" ]; then
             DEVELOPER_DIR="/Applications/Xcode-27.2.app/Contents/Developer"
             echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.2" >> "$GITHUB_ENV"
           elif [ -d "/Applications/Xcode_27.2.app/Contents/Developer" ]; then
             DEVELOPER_DIR="/Applications/Xcode_27.2.app/Contents/Developer"
             echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.2" >> "$GITHUB_ENV"
           elif [ -d "/Applications/Xcode_27.1.app/Contents/Developer" ]; then
             DEVELOPER_DIR="/Applications/Xcode_27.1.app/Contents/Developer"
             echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "METAL_CACHE_SUFFIX=xcode27.1-override" >> "$GITHUB_ENV"
             echo "::warning::Xcode 27.2 is unavailable. Building with the runner's Metal compiler via --allow-other-metal; shader rendering must be tested on-device."
           else
             echo "::error::No supported Xcode 27.2 or 27.1 installation found."
@@ -213,14 +221,25 @@ jobs:
           python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd zbic
           python -c "import zbic; print('ZBIC decoder import: OK')"
 
-      - name: Restore persistent shader cache
+      - name: Restore Dragon Quest shader cache from GitHub Release
         if: ${{ github.event_name == 'push' || inputs.mode == 'build' }}
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/nxnative-work/shader
-          key: nxnative-dragonquestvii-iphone4gb-metal-override-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
-          restore-keys: |
-            nxnative-sparkingzero-iphone4gb-metal-override-
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHADER_PROFILE: ${{ inputs.shader_profile || 'profile-v1' }}
+        run: |
+          set -euo pipefail
+          [[ "$SHADER_PROFILE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid shader_profile"; exit 1; }
+          TAG="dragon-quest-vii-shaders-$SHADER_PROFILE-$METAL_CACHE_SUFFIX"
+          ARCHIVE="Dragon-Quest-VII-Shaders-$SHADER_PROFILE-$METAL_CACHE_SUFFIX.tar.gz"
+          mkdir -p "$RUNNER_TEMP/nxnative-work" "$RUNNER_TEMP/shader-cache-restore"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release download "$TAG" --pattern "$ARCHIVE" --dir "$RUNNER_TEMP/shader-cache-restore"
+            tar -xzf "$RUNNER_TEMP/shader-cache-restore/$ARCHIVE" -C "$RUNNER_TEMP/nxnative-work"
+            test -d "$RUNNER_TEMP/nxnative-work/shader" || { echo "::error::Release archive did not contain the expected shader/ directory."; exit 1; }
+            echo "Restored Dragon Quest shader cache from $TAG."
+          else
+            echo "::warning::No matching Dragon Quest shader release exists ($TAG); this build will compile shaders from scratch."
+          fi
 
       - name: Generate DRAGON QUEST VII Reimagined game survey
         if: ${{ inputs.mode == 'survey' }}

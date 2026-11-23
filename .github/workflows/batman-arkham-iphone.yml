@@ -243,6 +243,7 @@ jobs:
           python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/batman-input/game" \
             --keys "$RUNNER_TEMP/batman-input/keys/prod.keys" \
             --platform ios \
+            --package "${{ inputs.game_version }}" \
             $NXNATIVE_METAL_ARGS \
             --work-dir "$RUNNER_TEMP/batman-work" \
             --out "$RUNNER_TEMP/Batman-Arkham-Asylum-iPhone.ipa" \

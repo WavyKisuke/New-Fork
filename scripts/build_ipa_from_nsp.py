@@ -1664,6 +1664,8 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
         (('files', [m]), ('stat' if provisional else 'tree', r),
          ('stat', r.parent / 'glslc_capture') if provisional else ('files', sorted((r.parent / 'glslc_capture').glob('*.glslc'))),
          ('stat', r.parent / 'ue_shaders') if provisional else ('files', sorted((r.parent / 'ue_shaders').glob('*.ushaderbytecode'))))]
+    # The EA reader is a package, not included by tool_files()'s top-level *.py glob.
+    inputs += [('files', sorted((repo / 'dm/gfx/tools/easf').glob('*.py')))]
     inputs += [item for r in dlc_roms for item in (('dlc', Path(r).name), ('stat', r))]   # DLC has no registered module build to pin its contents: include its index and re-extraction times, even when file sizes stay the same
     if oodle:   # a host or rewriter fix can change what the game's decoder produces
         PROG.set(step='building the Mac host for the game\'s Oodle decoder'); env = dict(env, **oodle())

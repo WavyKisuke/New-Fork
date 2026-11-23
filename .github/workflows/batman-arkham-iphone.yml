@@ -1,22 +1,24 @@
-name: Batman Arkham iPhone — Drive validation (trigger check)
+name: Batman Arkham Asylum — iPhone profile survey
 
 on:
   workflow_dispatch:
   push:
     branches:
       - feature/batman-arkham-asylum-port
+    paths:
+      - .github/workflows/batman-arkham-iphone.yml
 
 permissions:
   contents: read
 
 concurrency:
-  group: batman-arkham-drive-validation
+  group: batman-arkham-asylum-survey
   cancel-in-progress: false
 
 jobs:
-  validate-drive:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  survey:
+    runs-on: macos-15
+    timeout-minutes: 180
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -26,105 +28,110 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Google Drive client
-        run: python -m pip install --disable-pip-version-check google-api-python-client google-auth
+      - name: Install Drive and NXNative dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check google-api-python-client google-auth lz4 "capstone>=5,<6" fonttools backports.zstd
+          brew install zstd
 
-      - name: Validate shared game folder and inventory files
+      - name: Download Batman Arkham Asylum and keys from Drive
         env:
           GDRIVE_FOLDER_ID: '1Eqgn7tmDjbnlU7FK2KXBI4EV39uiHQ5t'
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
-          RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          test -n "$GDRIVE_FOLDER_ID" || { echo "::error::Missing GDRIVE_FOLDER_ID"; exit 1; }
-          test -n "$GDRIVE_SERVICE_ACCOUNT_JSON" || { echo "::error::Missing GDRIVE_SERVICE_ACCOUNT_JSON secret. Share the Drive folder with the service-account email, then add its JSON key as this repository secret."; exit 1; }
+          test -n "$GDRIVE_SERVICE_ACCOUNT_JSON" || { echo "::error::Missing GDRIVE_SERVICE_ACCOUNT_JSON secret"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/batman-input/game" "$RUNNER_TEMP/batman-input/keys"
           printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gdrive-service-account.json"
           chmod 600 "$RUNNER_TEMP/gdrive-service-account.json"
-          cat > "$RUNNER_TEMP/inventory_drive.py" <<'PY'
-          import json, os, pathlib
+          cat > "$RUNNER_TEMP/download_drive.py" <<'PY'
+          import os, pathlib, shutil
           from google.oauth2 import service_account
           from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
 
-          folder_id = os.environ["GDRIVE_FOLDER_ID"]
-          creds_path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "gdrive-service-account.json"
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "batman-input"
           creds = service_account.Credentials.from_service_account_file(
-              str(creds_path),
-              scopes=["https://www.googleapis.com/auth/drive.readonly"],
-          )
+              os.path.join(os.environ["RUNNER_TEMP"], "gdrive-service-account.json"),
+              scopes=["https://www.googleapis.com/auth/drive.readonly"])
           drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-
-          queue = [(folder_id, pathlib.Path())]
-          visited = set()
-          inventory = []
+          queue, files, visited = [(os.environ["GDRIVE_FOLDER_ID"], pathlib.Path())], [], set()
           while queue:
-              parent_id, relative = queue.pop(0)
-              if parent_id in visited:
+              parent, rel = queue.pop(0)
+              if parent in visited:
                   continue
-              visited.add(parent_id)
-              page_token = None
+              visited.add(parent)
+              page = None
               while True:
-                  response = drive.files().list(
-                      q=f"'{parent_id}' in parents and trashed=false",
-                      fields="nextPageToken,files(id,name,mimeType,size,shortcutDetails(targetId,targetMimeType))",
-                      pageToken=page_token,
-                      pageSize=1000,
-                  ).execute()
-                  for entry in response.get("files", []):
-                      item = entry
-                      child_path = relative / entry["name"]
+                  result = drive.files().list(
+                      q=f"'{parent}' in parents and trashed=false",
+                      fields="nextPageToken,files(id,name,mimeType,size,shortcutDetails(targetId))",
+                      pageToken=page, pageSize=1000).execute()
+                  for entry in result.get("files", []):
+                      item, child = entry, rel / entry["name"]
                       if entry["mimeType"] == "application/vnd.google-apps.shortcut":
-                          target_id = (entry.get("shortcutDetails") or {}).get("targetId")
-                          if not target_id:
-                              print(f"WARNING: shortcut target unavailable: {child_path}")
-                              continue
-                          try:
-                              item = drive.files().get(
-                                  fileId=target_id,
-                                  fields="id,name,mimeType,size,shortcutDetails",
-                              ).execute()
-                          except Exception as exc:
-                              print(f"WARNING: cannot read shortcut {child_path}: {exc}")
-                              continue
+                          target = (entry.get("shortcutDetails") or {}).get("targetId")
+                          if not target:
+                              raise SystemExit(f"Drive shortcut target missing: {child}")
+                          item = drive.files().get(fileId=target, fields="id,name,mimeType,size").execute()
                       if item["mimeType"] == "application/vnd.google-apps.folder":
-                          queue.append((item["id"], child_path))
+                          queue.append((item["id"], child))
                       else:
-                          inventory.append({
-                              "path": str(child_path),
-                              "name": item.get("name", ""),
-                              "mime_type": item.get("mimeType", ""),
-                              "size": int(item.get("size", 0)),
-                          })
-                  page_token = response.get("nextPageToken")
-                  if not page_token:
+                          files.append((item, child))
+                  page = result.get("nextPageToken")
+                  if not page:
                       break
 
-          extensions = {".nsp", ".nsz", ".xci", ".xcz"}
-          games = [x for x in inventory if pathlib.Path(x["name"]).suffix.lower() in extensions]
-          keys = [x for x in inventory if x["name"].lower() == "prod.keys"]
-          print(f"Drive access confirmed. Found {len(games)} Switch game package(s) and {len(keys)} prod.keys file(s).")
-          for item in sorted(inventory, key=lambda x: x["path"].lower()):
-              print(f'{item["path"]} | {item["size"]:,} bytes | {item["mime_type"]}')
-          if not games:
-              raise SystemExit("No .nsp, .nsz, .xci, or .xcz game packages were found.")
+          packages = [(f,p) for f,p in files if p.suffix.lower() in {".nsp",".nsz",".xci",".xcz"}]
+          keys = [(f,p) for f,p in files if p.name.lower() == "prod.keys"]
+          if len(packages) != 1:
+              raise SystemExit(f"Expected exactly one Asylum package; found {len(packages)}")
           if len(keys) != 1:
-              raise SystemExit(f"Expected exactly one prod.keys file; found {len(keys)}.")
-          report = {
-              "game_packages": games,
-              "prod_keys_count": len(keys),
-              "total_game_bytes": sum(x["size"] for x in games),
-              "inventory": inventory,
-          }
-          output = pathlib.Path(os.environ["RUNNER_TEMP"]) / "batman-drive-inventory.json"
-          output.write_text(json.dumps(report, indent=2))
-          print(f"Inventory report written to {output}")
+              raise SystemExit(f"Expected exactly one prod.keys; found {len(keys)}")
+          package, rel = packages[0]
+          print(f"Selected game package: {rel.name} ({int(package.get('size',0)):,} bytes)")
+          print(f"Selected keys file: {keys[0][1].name} ({int(keys[0][0].get('size',0)):,} bytes)")
+          free = shutil.disk_usage(root).free
+          needed = max(12 * 1024**3, int(package.get("size",0)) * 2)
+          print(f"Free runner space: {free:,}; conservative requirement: {needed:,}")
+          if free < needed:
+              raise SystemExit("Insufficient runner disk space for the game archive and extraction workspace.")
+
+          def download(item, dest):
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              request = drive.files().get_media(fileId=item["id"])
+              with dest.open("wb") as out:
+                  transfer = MediaIoBaseDownload(out, request, chunksize=8*1024*1024)
+                  done = False
+                  while not done:
+                      status, done = transfer.next_chunk()
+                      if status:
+                          print(f"{dest.name}: {int(status.progress()*100)}%")
+          download(package, root / "game" / rel.name)
+          download(keys[0][0], root / "keys" / "prod.keys")
+          if (root / "keys" / "prod.keys").stat().st_size == 0:
+              raise SystemExit("Downloaded prod.keys is empty.")
           PY
-          python "$RUNNER_TEMP/inventory_drive.py"
+          python "$RUNNER_TEMP/download_drive.py"
           rm -f "$RUNNER_TEMP/gdrive-service-account.json"
 
-      - name: Upload private-input inventory
+      - name: Generate Asylum title and executable survey
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+        run: |
+          set -euo pipefail
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/batman-input/game" \
+            --keys "$RUNNER_TEMP/batman-input/keys/prod.keys" \
+            --survey-only \
+            --work-dir "$RUNNER_TEMP/batman-work" \
+            --progress lines
+
+      - name: Upload Asylum survey
         uses: actions/upload-artifact@v4
         with:
-          name: batman-drive-inventory
-          path: ${{ runner.temp }}/batman-drive-inventory.json
+          name: Batman-Arkham-Asylum-profile-survey
+          path: |
+            ${{ runner.temp }}/batman-input/game/*_survey/
+            ${{ runner.temp }}/batman-work/
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7

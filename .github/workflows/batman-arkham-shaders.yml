@@ -13,16 +13,6 @@ on:
         type: string
         required: true
         default: profile-v1
-      game_version:
-        description: "Game package version used to identify the shader cache (e.g. v0)"
-        type: string
-        required: true
-        default: v0
-      shader_profile:
-        description: "Shader profile revision; increment when the game shader profile changes"
-        type: string
-        required: true
-        default: profile-v1
 
 permissions:
   contents: read
@@ -187,6 +177,7 @@ jobs:
           python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/batman-input/game" \
             --keys "$RUNNER_TEMP/batman-input/keys/prod.keys" \
             --platform ios \
+            --package "${{ inputs.game_version }}" \
             --shaders-only \
             $NXNATIVE_METAL_ARGS \
             --work-dir "$RUNNER_TEMP/batman-work" \

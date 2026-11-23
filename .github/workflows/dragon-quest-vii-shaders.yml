@@ -1,6 +1,11 @@
 name: DRAGON QUEST VII — compile reusable iPhone shaders
 
 on:
+  push:
+    branches:
+      - feature/batman-arkham-asylum-port
+    paths:
+      - .github/workflows/dragon-quest-vii-shaders.yml
   workflow_dispatch:
     inputs:
       shader_profile:
@@ -13,7 +18,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: dragon-quest-vii-shaders-${{ inputs.shader_profile }}
+  group: dragon-quest-vii-shaders-${{ inputs.shader_profile || 'profile-v1' }}
   cancel-in-progress: false
 
 jobs:
@@ -154,7 +159,7 @@ jobs:
 
       - name: Validate release asset identity
         env:
-          SHADER_PROFILE: ${{ inputs.shader_profile }}
+          SHADER_PROFILE: ${{ inputs.shader_profile || 'profile-v1' }}
         run: |
           set -euo pipefail
           [[ "$SHADER_PROFILE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::Invalid shader_profile"; exit 1; }

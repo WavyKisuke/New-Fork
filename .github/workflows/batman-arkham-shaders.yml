@@ -15,8 +15,7 @@ on:
         default: profile-v1
 
 permissions:
-  contents: read
-  actions: read
+  contents: write
 
 concurrency:
   group: batman-arkham-asylum-shaders-${{ inputs.game_version }}-${{ inputs.shader_profile }}
@@ -31,7 +30,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Select compatible Metal toolchain
-        if: true
         run: |
           set -euo pipefail
           if [ -d "/Applications/Xcode-27.1.app/Contents/Developer" ]; then
@@ -183,12 +181,25 @@ jobs:
             --work-dir "$RUNNER_TEMP/batman-work" \
             --progress lines
 
-      - name: Publish versioned shader cache artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Batman-Shaders-${{ inputs.game_version }}-${{ inputs.shader_profile }}
-          path: |
-            ${{ runner.temp }}/batman-work/shader/
-            ${{ runner.temp }}/batman-work/profile/
-          if-no-files-found: error
-          retention-days: 90
+      - name: Publish durable shader cache release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GAME_VERSION: ${{ inputs.game_version }}
+          SHADER_PROFILE: ${{ inputs.shader_profile }}
+        run: |
+          set -euo pipefail
+          TAG="batman-shaders-${GAME_VERSION}-${SHADER_PROFILE}"
+          ARCHIVE="Batman-Shaders-${GAME_VERSION}-${SHADER_PROFILE}.tar.gz"
+          if [ -d "$RUNNER_TEMP/batman-work/profile" ]; then
+            tar -czf "$RUNNER_TEMP/$ARCHIVE" -C "$RUNNER_TEMP/batman-work" shader profile
+          else
+            tar -czf "$RUNNER_TEMP/$ARCHIVE" -C "$RUNNER_TEMP/batman-work" shader
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP/$ARCHIVE" --clobber
+          else
+            gh release create "$TAG" "$RUNNER_TEMP/$ARCHIVE" \
+              --title "$TAG" \
+              --notes "Precompiled iPhone shader cache for Batman Arkham Asylum. Game version: $GAME_VERSION. Shader profile revision: $SHADER_PROFILE." \
+              --target "$GITHUB_SHA"
+          fi

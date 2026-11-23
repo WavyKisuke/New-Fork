@@ -2,6 +2,9 @@ name: Batman Arkham iPhone — Drive validation
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/batman-arkham-asylum-port
 
 permissions:
   contents: read

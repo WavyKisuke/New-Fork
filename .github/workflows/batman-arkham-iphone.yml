@@ -24,7 +24,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: batman-arkham-asylum-manual-build
@@ -194,44 +193,23 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Download matching precompiled shader cache
+      - name: Download matching precompiled shader cache release
         if: ${{ inputs.mode == 'build' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          CACHE_ARTIFACT: Batman-Shaders-${{ inputs.game_version }}-${{ inputs.shader_profile }}
+          GAME_VERSION: ${{ inputs.game_version }}
+          SHADER_PROFILE: ${{ inputs.shader_profile }}
         run: |
           set -euo pipefail
+          TAG="batman-shaders-${GAME_VERSION}-${SHADER_PROFILE}"
+          ARCHIVE="Batman-Shaders-${GAME_VERSION}-${SHADER_PROFILE}.tar.gz"
           mkdir -p "$RUNNER_TEMP/batman-work" "$RUNNER_TEMP/shader-download"
-          mapfile -t RUN_IDS < <(gh run list \
-            --workflow batman-arkham-shaders.yml \
-            --branch feature/batman-arkham-asylum-port \
-            --status success --limit 50 --json databaseId \
-            --jq '.[].databaseId')
-          if [ "${#RUN_IDS[@]}" -eq 0 ]; then
-            echo "::error::No successful shader workflow runs found. Run batman-arkham-shaders.yml first."
-            exit 1
-          fi
-          FOUND=0
-          for RUN_ID in "${RUN_IDS[@]}"; do
-            rm -rf "$RUNNER_TEMP/shader-download"
-            mkdir -p "$RUNNER_TEMP/shader-download"
-            if gh run download "$RUN_ID" --name "$CACHE_ARTIFACT" --dir "$RUNNER_TEMP/shader-download" 2>/dev/null; then
-              echo "Using shader artifact $CACHE_ARTIFACT from workflow run $RUN_ID"
-              FOUND=1
-              break
-            fi
-          done
-          if [ "$FOUND" -ne 1 ]; then
-            echo "::error::No successful shader artifact named $CACHE_ARTIFACT was found. Compile it with batman-arkham-shaders.yml first."
-            exit 1
-          fi
-          test -d "$RUNNER_TEMP/shader-download/shader" || { echo "::error::Shader artifact is missing its shader/ directory"; exit 1; }
-          cp -R "$RUNNER_TEMP/shader-download/shader" "$RUNNER_TEMP/batman-work/"
-          if [ -d "$RUNNER_TEMP/shader-download/profile" ]; then
-            cp -R "$RUNNER_TEMP/shader-download/profile" "$RUNNER_TEMP/batman-work/"
-          fi
-          echo "Restored shader cache; IPA build will validate fingerprints and reuse compiled libraries."
-          
+          gh release download "$TAG" --pattern "$ARCHIVE" --dir "$RUNNER_TEMP/shader-download"
+          test -s "$RUNNER_TEMP/shader-download/$ARCHIVE" || { echo "::error::Shader release asset is missing: $TAG / $ARCHIVE"; exit 1; }
+          tar -xzf "$RUNNER_TEMP/shader-download/$ARCHIVE" -C "$RUNNER_TEMP/batman-work"
+          test -d "$RUNNER_TEMP/batman-work/shader" || { echo "::error::Downloaded release has no shader/ directory"; exit 1; }
+          echo "Restored shader cache from release $TAG; the IPA build will validate fingerprints and reuse compiled libraries."
+
       - name: Build Batman Arkham Asylum unsigned iPhone IPA
         if: ${{ inputs.mode == 'build' }}
         env:

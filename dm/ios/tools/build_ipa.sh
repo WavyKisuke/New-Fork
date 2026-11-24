@@ -216,10 +216,10 @@ with zipfile.ZipFile(ipa) as z:
     except Exception as exc:
         raise SystemExit(f"[RED] IPA verification: cannot read {launcher}: {exc}")
     mode = next((s for s in settings if s.get("env") == "DM_OPMODE"), None)
-    if not mode or not {"0", "1"}.issubset(set(mode.get("options", [])) | {v for v, _ in mode.get("choices", [])}):
-        # The settings schema stores choice labels separately; verify both values below.
-        if not mode or len(mode.get("options", [])) < 2:
-            raise SystemExit("[RED] IPA verification: DM_OPMODE Handheld/Console selector missing")
+    values = {str(option[0]) for option in (mode or {}).get("options", [])
+              if isinstance(option, list) and len(option) == 2}
+    if not mode or not {"0", "1"}.issubset(values):
+        raise SystemExit("[RED] IPA verification: DM_OPMODE Handheld/Console selector missing")
     print("IPA verification: launcher and DM_OPMODE selector are present")
     expected_dlc = bool(aoc and aoc.is_dir() and any(aoc.iterdir()))
     bundled_dlc = any(n.startswith("Payload/DmIOS.app/aoc/") and not n.endswith("/") for n in names)

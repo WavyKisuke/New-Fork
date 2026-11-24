@@ -173,6 +173,7 @@ jobs:
           key: nxnative-bioshock-remastered-iphone4gb-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
           restore-keys: |
             nxnative-bioshock-remastered-iphone4gb-
+          save-always: true
 
       - name: Generate BioShock game survey
         if: ${{ inputs.mode == 'survey' }}
@@ -204,6 +205,15 @@ jobs:
             --work-dir "$RUNNER_TEMP/nxnative-work" \
             --out "$RUNNER_TEMP/BioShock-Remastered-iPhone-4GB.ipa" \
             --progress lines
+
+      - name: Upload BioShock survey diagnostics after build
+        if: ${{ always() && inputs.mode == 'build' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: BioShock-Remastered-game-survey-${{ github.run_number }}
+          path: ${{ runner.temp }}/nxnative-input/game/*_survey/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload BioShock iPhone IPA
         if: ${{ inputs.mode == 'build' }}

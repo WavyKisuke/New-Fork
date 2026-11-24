@@ -2393,6 +2393,70 @@ def scan_file(args):
         print(f'[RED] {why} (its shaders are left out)', flush=True)
         return args[1], {}, set(), ('unreadable', why)
 
+def shadercache_nx_framing(d):
+    """The block framing of a RomFS shadercache.nx, or None when the file is not one. Two exist: version 13's blocks are
+    {u32 stored length, one zlib stream}, version 28's are {u32 stored length, u32 raw length, one zlib stream} (its raw length
+    varies: 32 KiB in the main cache, the whole file in startupshadercache.nx). The table is walked without inflating it: every
+    stored length in range, every block a zlib stream (0x78), and the last block ending exactly at the file's end — a game's
+    zlib chunk table that does not fill its file, or a zstd/Yaz0 container, is not one. Returns the bytes between a block's
+    stored length and its stream (4 or 8)"""
+    if len(d) < 16: return None
+    ver, count = struct.unpack_from('<II', d, 0)
+    if not 1 <= ver <= 0x100 or not 1 <= count <= 1 << 20: return None
+    for word in (4, 8):
+        at, ok = 8, True
+        for _ in range(count):
+            if at + word > len(d): ok = False; break
+            stored, = struct.unpack_from('<I', d, at)
+            body = at + word
+            if stored < 8 or body + stored > len(d) or d[body] != 0x78: ok = False; break
+            at = body + stored
+        if ok and at == len(d): return word
+    return None
+
+def is_shadercache_nx(d): return shadercache_nx_framing(d) is not None
+
+def shadercache_nx(d, label):
+    """The NVN graphics programs of shadercache.nx, the RomFS shader cache of BioShock Remastered (Blind Squirrel's Unreal Engine 3 port): 5,557 zlib blocks of 32 KiB
+    (the last 20,133 bytes) that join to 182,079,141 bytes holding 20,421 records: 16-byte header {u32 control length, u32 code length, ?, ?}, the code area, then the
+    control section. 2,622 records cross a block boundary, so the blocks are joined before anything is looked for: a per-block scan finds 18,041 distinct keys, not
+    20,419. The header's control length is the record's own (0x880 to 0x970 here: the bytes past 0x880 are the container's per-record descriptors), while NVN's control
+    section declares 0x880 at +0x20 and that is the length the host's key hashes. The control magic can sit in code and descriptor bytes too, so a candidate is taken only
+    when the header's code length equals the record's, the code area starts with the graphics magic and check() passes; the label is the control section's offset in the
+    joined stream, so it is reproducible from the game's file alone"""
+    ver, count = field(d, '<II', 0, label)
+    word = shadercache_nx_framing(d)
+    if word is None: red(f'{label}: {ver} version, {count} blocks that do not fill the file')
+    parts, at = [], 8
+    for i in range(count):
+        where = f'{label}: block {i} at {at:#x}'
+        stored, = field(d, '<I', at, where)
+        body = span(d, at + word, stored, where)
+        if body[:1] != b'\x78': red(f'{where}: {stored} stored bytes that are not a zlib stream')
+        try: parts.append(zlib.decompress(body))
+        except zlib.error as e: red(f'{where}: invalid zlib stream ({e})')
+        at += word + stored
+    if at != len(d): red(f'{label}: {count} blocks end at {at:#x}, the file is {len(d):#x}')
+    s = b''.join(parts)
+    out, off = [], 0
+    while (c := s.find(CTL_MAGIC, off)) >= 0:
+        off = c + 4
+        if c + 0x708 > len(s): break
+        n, = struct.unpack_from('<I', s, c + 0x704)
+        start = c - n
+        if n < 0x40 or start < 16: continue
+        nctl, ncode = struct.unpack_from('<II', s, start - 16)
+        if ncode != n or not 0x880 <= nctl <= 0x1000 or c + 0x880 > len(s): continue
+        code, ctl = s[start:c], s[c:c + 0x880]
+        if code[:4] != GFX_MAGIC: continue
+        st = sph_stage(code)
+        if st is None or st == 'cs': red(f'{label}#NXBLK@0x{c:x}: stage {st} with a graphics code area')
+        why = check(label, st, ctl, code)
+        if why: red(f'{label}#NXBLK@0x{c:x}: {why}')
+        out.append((f'{label}#NXBLK@0x{c:x}', st, ctl, code))
+    if not out: red(f'{label}: {ver} version, {count} blocks, no NVN record')
+    return out
+
 def scan_file_in(args):
     path, rel = args[:2]
     stem, ext = os.path.splitext(path)
@@ -2474,7 +2538,10 @@ def scan_file_in(args):
     if head[:4] == ZSTD_MAGIC: d = unzs(path)   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
     else:
         with open(path, 'rb') as f: d = f.read()
-    if head[4:5] == b'\x78' and path.endswith('.gz') and (z := gust_gz(d)) is not None: d = z   # Gust's chunked zlib (gust_gz)
+    if head[4:5] == b'\x78' and path.endswith('.gz') and (z := gust_gz(d)) is not None: d = z
+    if is_shadercache_nx(d):   # BioShock Remastered: join zlib blocks before scanning records
+        found = shadercache_nx(d, '/' + os.path.basename(rel))
+        return rel, uniq_keys(found), var_pairs(found), trees   # Gust's chunked zlib (gust_gz)
     # Monolith also ships these containers loose, without an ARH/ARD archive
     # (Xenoblade DE). The generic prefilter below otherwise drops even HCPS.
     # DRSM model streams contain several embedded XBC1 resources.

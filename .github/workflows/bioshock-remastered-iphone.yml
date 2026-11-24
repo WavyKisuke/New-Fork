@@ -1,0 +1,215 @@
+name: BioShock Remastered iPhone IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Validate Drive, generate the game survey, or build the IPA"
+        type: choice
+        required: true
+        default: validate
+        options:
+          - validate
+          - survey
+          - build
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bioshock-remastered-iphone-4gb
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 360
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 27.1
+        if: ${{ inputs.mode == 'build' }}
+        run: |
+          set -euo pipefail
+          test -d "/Applications/Xcode_27.1.app/Contents/Developer" || { echo "::error::Xcode 27.1 is not installed."; ls -d /Applications/Xcode*.app 2>/dev/null || true; exit 1; }
+          sudo xcode-select -s "/Applications/Xcode_27.1.app/Contents/Developer"
+          xcodebuild -version | tee "$RUNNER_TEMP/xcode-version.txt"
+          grep -Fq "Xcode 27.1" "$RUNNER_TEMP/xcode-version.txt"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET SDK
+        if: ${{ inputs.mode != 'validate' }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install Google Drive client
+        run: python -m pip install --disable-pip-version-check google-api-python-client google-auth
+
+      - name: Validate BioShock Drive folder and download BioShock packages
+        env:
+          GDRIVE_FOLDER_ID: 1Eqgn7tmDjbnlU7FK2KXBI4EV39uiHQ5t
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          BUILD_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          test -n "$GDRIVE_SERVICE_ACCOUNT_JSON" || { echo "::error::Missing GDRIVE_SERVICE_ACCOUNT_JSON repository secret."; exit 1; }
+          mkdir -p "$RUNNER_TEMP/nxnative-input/game" "$RUNNER_TEMP/nxnative-input/keys"
+          printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gdrive-service-account.json"
+          chmod 600 "$RUNNER_TEMP/gdrive-service-account.json"
+          cat > "$RUNNER_TEMP/download_drive.py" <<'PY'
+          import os, pathlib, shutil
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+
+          folder_id = os.environ["GDRIVE_FOLDER_ID"]
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "nxnative-input"
+          creds = service_account.Credentials.from_service_account_file(
+              os.path.join(os.environ["RUNNER_TEMP"], "gdrive-service-account.json"),
+              scopes=["https://www.googleapis.com/auth/drive.readonly"])
+          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+          queue, files = [(folder_id, pathlib.Path(""))], []
+          while queue:
+              parent, rel = queue.pop(0)
+              page = None
+              while True:
+                  result = drive.files().list(
+                      q=f"'{parent}' in parents and trashed=false",
+                      fields="nextPageToken,files(id,name,mimeType,size,shortcutDetails)",
+                      pageToken=page, pageSize=1000).execute()
+                  for item in result.get("files", []):
+                      child = rel / item["name"]
+                      if item["mimeType"] == "application/vnd.google-apps.folder":
+                          queue.append((item["id"], child))
+                      elif item["mimeType"] == "application/vnd.google-apps.shortcut":
+                          target = item.get("shortcutDetails", {}).get("targetId")
+                          if target:
+                              target_meta = drive.files().get(fileId=target, fields="id,name,mimeType,size").execute()
+                              if target_meta["mimeType"] == "application/vnd.google-apps.folder":
+                                  queue.append((target, child))
+                              else:
+                                  files.append((target_meta, child))
+                      else:
+                          files.append((item, child))
+                  page = result.get("nextPageToken")
+                  if not page:
+                      break
+
+          game_ext = {".nsp", ".nsz", ".xci", ".xcz"}
+          all_games = [(f, rel) for f, rel in files if rel.suffix.lower() in game_ext]
+          keys = [(f, rel) for f, rel in files if rel.name.lower() == "prod.keys"]
+          # Include the base title ID and packages explicitly named for BioShock.
+          games = [(f, rel) for f, rel in all_games
+                   if "0100ad10102b2000" in rel.name.lower()
+                   or "bioshock" in rel.name.lower()]
+          if len(keys) != 1:
+              raise SystemExit(f"Expected exactly one prod.keys in this Drive folder; found {len(keys)}.")
+          if not any("0100ad10102b2000" in rel.name.lower() for _, rel in games):
+              raise SystemExit("BioShock base NSP (title ID 0100AD10102B2000) was not found. Check the folder and filename.")
+          if not games:
+              raise SystemExit("No BioShock game packages found.")
+          print(f"Drive access confirmed. BioShock packages selected: {len(games)}")
+          print("Selected packages:")
+          for f, rel in games:
+              print(f"  {rel} ({int(f.get('size', 0)):,} bytes)")
+          print("Other game packages intentionally excluded:")
+          for f, rel in all_games:
+              if (f, rel) not in games:
+                  print(f"  {rel.name}")
+
+          def download(item, destination):
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              request = drive.files().get_media(fileId=item["id"])
+              with open(destination, "wb") as output:
+                  transfer = MediaIoBaseDownload(output, request, chunksize=8 * 1024 * 1024)
+                  done = False
+                  while not done:
+                      status, done = transfer.next_chunk()
+                      if status:
+                          print(f"{destination.name}: {int(status.progress() * 100)}%")
+
+          download(keys[0][0], root / "keys" / "prod.keys")
+          if (root / "keys" / "prod.keys").stat().st_size == 0:
+              raise SystemExit("Downloaded prod.keys is empty.")
+          if os.environ["BUILD_MODE"] != "validate":
+              total = sum(int(f.get("size", 0)) for f, _ in games)
+              free = shutil.disk_usage(root).free
+              required = max(5 * 1024**3, int(total * 2.0))
+              print(f"Free disk: {free:,}; estimated required: {required:,} bytes.")
+              if free < required:
+                  raise SystemExit("Not enough free runner disk space for the selected packages.")
+              seen = set()
+              for item, rel in games:
+                  if rel.name in seen:
+                      raise SystemExit(f"Duplicate package filename: {rel.name}")
+                  seen.add(rel.name)
+                  download(item, root / "game" / rel.name)
+          else:
+              print("Validation only: packages listed, not downloaded.")
+          PY
+          python "$RUNNER_TEMP/download_drive.py"
+          rm -f "$RUNNER_TEMP/gdrive-service-account.json"
+
+      - name: Install NXNative build dependencies
+        if: ${{ inputs.mode != 'validate' }}
+        run: |
+          set -euo pipefail
+          brew install xcodegen zstd glslang
+          python -m pip install --upgrade pip
+          python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd
+
+      - name: Restore BioShock shader/build cache
+        if: ${{ inputs.mode == 'build' }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nxnative-work
+          key: nxnative-bioshock-remastered-iphone4gb-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
+          restore-keys: |
+            nxnative-bioshock-remastered-iphone4gb-
+
+      - name: Generate BioShock game survey
+        if: ${{ inputs.mode == 'survey' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nxnative-work"
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" --survey-only --work-dir "$RUNNER_TEMP/nxnative-work" --progress lines
+
+      - name: Upload BioShock game survey
+        if: ${{ inputs.mode == 'survey' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: BioShock-Remastered-game-survey
+          path: ${{ runner.temp }}/nxnative-work/*_survey/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build unsigned BioShock iPhone IPA for 4 GB devices
+        if: ${{ inputs.mode == 'build' }}
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nxnative-work"
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
+            --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
+            --platform ios \
+            --older-iphone 128 \
+            --work-dir "$RUNNER_TEMP/nxnative-work" \
+            --out "$RUNNER_TEMP/BioShock-Remastered-iPhone-4GB.ipa" \
+            --progress lines
+
+      - name: Upload BioShock iPhone IPA
+        if: ${{ inputs.mode == 'build' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: BioShock-Remastered-iPhone-4GB-IPA
+          path: ${{ runner.temp }}/BioShock-Remastered-iPhone-4GB.ipa
+          if-no-files-found: error
+          retention-days: 7

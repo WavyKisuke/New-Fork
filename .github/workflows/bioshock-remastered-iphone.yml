@@ -186,7 +186,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: BioShock-Remastered-game-survey
-          path: ${{ runner.temp }}/nxnative-work/*_survey/
+          path: ${{ runner.temp }}/nxnative-input/game/*_survey/
           if-no-files-found: error
           retention-days: 7
 

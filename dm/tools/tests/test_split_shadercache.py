@@ -51,8 +51,8 @@ class ShadercacheNx(unittest.TestCase):
         self.assertFalse(ss.is_shadercache_nx(bytes(64)))
 
     def test_the_record_before_the_first_boundary_is_found_only_after_joining(self):
-        ctl_off = len(STREAM) - (len(B) + len(C) + len(B)) - len(VS[1])
-        self.assertNotEqual(ctl_off // BLOCK, (ctl_off - len(VS[0])) // BLOCK)
+        ctl_off = len(STREAM) - (len(B) + len(C) + len(B)) - len(VS[0])
+        self.assertNotEqual(ctl_off // BLOCK, (ctl_off - len(VS[1])) // BLOCK)
         found = ss.shadercache_nx(FILE, '/shadercache.nx')
         self.assertEqual(len(found), 4)
         self.assertEqual(found[0][0], f'/shadercache.nx#NXBLK@0x{ctl_off:x}')

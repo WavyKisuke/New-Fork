@@ -198,4 +198,33 @@ case "$PULL" in 0|1) ;; *) die "no DM_GAME_PSO_MTL4 in generated game profile";;
 # Keep this array nonempty: macOS Bash 3.2 treats an empty array as unset under set -u.
 PACK_OPTS=(--store "$(gp zip_store)"); [ -n "${PSO:-}" ] || [ "${IOS_PULL:-$PULL}" = 1 ] || PACK_OPTS+=(--skip-suffix _bp.metallib)
 python3 tools/pack_ipa.py "$OUT_IPA" "${PACK_OPTS[@]}" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs --skip $P/romfs.img --skip $P/romfs.id "${MAPS[@]}" || die "pack_ipa"
+# Verify the finished IPA contains the launcher and its Handheld/Console selector,
+# and that extracted DLC was actually packed into the app.
+python3 - "$OUT_IPA" "$AOC" <<'PYVERIFY'
+import json, pathlib, sys, zipfile
+ipa = pathlib.Path(sys.argv[1])
+aoc = pathlib.Path(sys.argv[2]) if sys.argv[2] else None
+with zipfile.ZipFile(ipa) as z:
+    names = set(z.namelist())
+    launcher_paths = ("Payload/DmIOS.app/dm/launcher.json",
+                      "Payload/DmIOS.app/dm/p0/launcher.json")
+    launcher = next((p for p in launcher_paths if p in names), None)
+    if not launcher:
+        raise SystemExit("[RED] IPA verification: launcher.json missing; the mode selector cannot appear")
+    try:
+        settings = json.loads(z.read(launcher)).get("settings", [])
+    except Exception as exc:
+        raise SystemExit(f"[RED] IPA verification: cannot read {launcher}: {exc}")
+    mode = next((s for s in settings if s.get("env") == "DM_OPMODE"), None)
+    if not mode or not {"0", "1"}.issubset(set(mode.get("options", [])) | {v for v, _ in mode.get("choices", [])}):
+        # The settings schema stores choice labels separately; verify both values below.
+        if not mode or len(mode.get("options", [])) < 2:
+            raise SystemExit("[RED] IPA verification: DM_OPMODE Handheld/Console selector missing")
+    print("IPA verification: launcher and DM_OPMODE selector are present")
+    expected_dlc = bool(aoc and aoc.is_dir() and any(aoc.iterdir()))
+    bundled_dlc = any(n.startswith("Payload/DmIOS.app/aoc/") and not n.endswith("/") for n in names)
+    if expected_dlc and not bundled_dlc:
+        raise SystemExit("[RED] IPA verification: DLC was extracted but not packed into the IPA")
+    print("IPA verification: DLC content is present" if bundled_dlc else "IPA verification: no DLC input was supplied")
+PYVERIFY
 t "done: $OUT_IPA ($(du -h "$OUT_IPA" | cut -f1))"

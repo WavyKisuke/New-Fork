@@ -12,12 +12,17 @@ on:
           - validate
           - survey
           - build
+      dlc_file_id:
+        description: "Optional Google Drive file ID for the BioShock DLC ZIP (auto-detected by filename if blank)"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: bioshock-remastered-iphone-4gb
+  group: bioshock-remastered-iphone-6gb
   cancel-in-progress: false
 
 jobs:
@@ -51,25 +56,32 @@ jobs:
       - name: Install Google Drive client
         run: python -m pip install --disable-pip-version-check google-api-python-client google-auth
 
-      - name: Validate BioShock Drive folder and download BioShock packages
+      - name: Validate Drive and stage BioShock base, update ZIP, DLC ZIP, and keys
         env:
           GDRIVE_FOLDER_ID: 1Eqgn7tmDjbnlU7FK2KXBI4EV39uiHQ5t
+          GDRIVE_UPDATE_FILE_ID: 1woGd00cT6FG9euWINqK5TzbwJnQwi3UR
+          GDRIVE_DLC_FILE_ID: ${{ inputs.dlc_file_id }}
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
           BUILD_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           test -n "$GDRIVE_SERVICE_ACCOUNT_JSON" || { echo "::error::Missing GDRIVE_SERVICE_ACCOUNT_JSON repository secret."; exit 1; }
-          mkdir -p "$RUNNER_TEMP/nxnative-input/game" "$RUNNER_TEMP/nxnative-input/keys"
+          mkdir -p "$RUNNER_TEMP/nxnative-input/game" "$RUNNER_TEMP/nxnative-input/keys" "$RUNNER_TEMP/nxnative-input/archives"
           printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gdrive-service-account.json"
           chmod 600 "$RUNNER_TEMP/gdrive-service-account.json"
           cat > "$RUNNER_TEMP/download_drive.py" <<'PY'
-          import os, pathlib, shutil
+          import os, pathlib, shutil, zipfile
           from google.oauth2 import service_account
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaIoBaseDownload
 
           folder_id = os.environ["GDRIVE_FOLDER_ID"]
+          update_id = os.environ["GDRIVE_UPDATE_FILE_ID"]
+          requested_dlc_id = os.environ.get("GDRIVE_DLC_FILE_ID", "").strip()
+          mode = os.environ["BUILD_MODE"]
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "nxnative-input"
+          game_dir = root / "game"
+          archive_dir = root / "archives"
           creds = service_account.Credentials.from_service_account_file(
               os.path.join(os.environ["RUNNER_TEMP"], "gdrive-service-account.json"),
               scopes=["https://www.googleapis.com/auth/drive.readonly"])
@@ -91,38 +103,61 @@ jobs:
                       elif item["mimeType"] == "application/vnd.google-apps.shortcut":
                           target = item.get("shortcutDetails", {}).get("targetId")
                           if target:
-                              target_meta = drive.files().get(fileId=target, fields="id,name,mimeType,size").execute()
-                              if target_meta["mimeType"] == "application/vnd.google-apps.folder":
+                              meta = drive.files().get(fileId=target, fields="id,name,mimeType,size,shortcutDetails").execute()
+                              if meta["mimeType"] == "application/vnd.google-apps.folder":
                                   queue.append((target, child))
                               else:
-                                  files.append((target_meta, child))
+                                  files.append((meta, child))
                       else:
                           files.append((item, child))
                   page = result.get("nextPageToken")
                   if not page:
                       break
 
-          game_ext = {".nsp", ".nsz", ".xci", ".xcz"}
-          all_games = [(f, rel) for f, rel in files if rel.suffix.lower() in game_ext]
+          def metadata(file_id):
+              return drive.files().get(fileId=file_id, fields="id,name,mimeType,size").execute()
+
+          update = metadata(update_id)
+          if update.get("mimeType") == "application/vnd.google-apps.folder":
+              raise SystemExit("The configured BioShock update ID points to a folder, not a ZIP file.")
+          if not update["name"].lower().endswith(".zip"):
+              raise SystemExit(f"Expected the BioShock update to be a ZIP; Drive reports: {update['name']}")
+
           keys = [(f, rel) for f, rel in files if rel.name.lower() == "prod.keys"]
-          # Include the base title ID and packages explicitly named for BioShock.
-          games = [(f, rel) for f, rel in all_games
-                   if "0100ad10102b2000" in rel.name.lower()
-                   or "bioshock" in rel.name.lower()]
+          bases = [(f, rel) for f, rel in files
+                   if rel.suffix.lower() in {".nsp", ".nsz", ".xci", ".xcz"}
+                   and ("0100ad10102b2000" in rel.name.lower() or "bioshock" in rel.name.lower())]
           if len(keys) != 1:
-              raise SystemExit(f"Expected exactly one prod.keys in this Drive folder; found {len(keys)}.")
-          if not any("0100ad10102b2000" in rel.name.lower() for _, rel in games):
-              raise SystemExit("BioShock base NSP (title ID 0100AD10102B2000) was not found. Check the folder and filename.")
-          if not games:
-              raise SystemExit("No BioShock game packages found.")
-          print(f"Drive access confirmed. BioShock packages selected: {len(games)}")
-          print("Selected packages:")
-          for f, rel in games:
-              print(f"  {rel} ({int(f.get('size', 0)):,} bytes)")
-          print("Other game packages intentionally excluded:")
-          for f, rel in all_games:
-              if (f, rel) not in games:
-                  print(f"  {rel.name}")
+              raise SystemExit(f"Expected exactly one prod.keys in the Drive folder; found {len(keys)}.")
+          if not any("0100ad10102b2000" in rel.name.lower() for _, rel in bases):
+              raise SystemExit("BioShock base package (title ID 0100AD10102B2000) was not found in the Drive folder.")
+
+          if requested_dlc_id:
+              dlc = metadata(requested_dlc_id)
+          else:
+              candidates = [(f, rel) for f, rel in files
+                            if rel.suffix.lower() == ".zip"
+                            and "dlc" in rel.name.lower()
+                            and ("bioshock" in rel.name.lower() or "0100ad10102b2000" in rel.name.lower())]
+              if len(candidates) != 1:
+                  names = ", ".join(str(rel) for _, rel in candidates) or "none"
+                  raise SystemExit(
+                      "Could not identify exactly one BioShock DLC ZIP by filename. "
+                      f"Matching files: {names}. Rerun and enter the DLC ZIP's Google Drive file ID in the dlc_file_id input."
+                  )
+              dlc = candidates[0][0]
+          if not dlc["name"].lower().endswith(".zip"):
+              raise SystemExit(f"Expected the BioShock DLC to be a ZIP; Drive reports: {dlc['name']}")
+
+          print(f"Base package(s): {len(bases)}")
+          for item, rel in bases:
+              print(f"  {rel} ({int(item.get('size', 0)):,} bytes)")
+          print(f"Update ZIP: {update['name']} ({int(update.get('size', 0)):,} bytes)")
+          print(f"DLC ZIP: {dlc['name']} ({int(dlc.get('size', 0)):,} bytes)")
+          print(f"prod.keys: {keys[0][1]}")
+          if mode == "validate":
+              print("Drive validation complete. No game archives were downloaded in validate mode.")
+              raise SystemExit(0)
 
           def download(item, destination):
               destination.parent.mkdir(parents=True, exist_ok=True)
@@ -133,26 +168,66 @@ jobs:
                   while not done:
                       status, done = transfer.next_chunk()
                       if status:
-                          print(f"{destination.name}: {int(status.progress() * 100)}%")
+                          print(f"{destination.name}: {int(status.progress() * 100)}%", flush=True)
+              if destination.stat().st_size == 0:
+                  raise SystemExit(f"Downloaded file is empty: {destination.name}")
 
           download(keys[0][0], root / "keys" / "prod.keys")
+          for item, rel in bases:
+              download(item, game_dir / rel.name)
+          update_zip = archive_dir / "bioshock-update.zip"
+          dlc_zip = archive_dir / "bioshock-dlc.zip"
+          download(update, update_zip)
+          download(dlc, dlc_zip)
+
+          package_ext = {".nsp", ".nsz", ".xci", ".xcz"}
+          extracted_names = set()
+          def extract_packages(archive_path, label):
+              total_uncompressed = 0
+              count = 0
+              try:
+                  with zipfile.ZipFile(archive_path) as archive:
+                      for info in archive.infolist():
+                          if info.is_dir():
+                              continue
+                          name = pathlib.PurePosixPath(info.filename).name
+                          if not name or name.startswith("._") or pathlib.Path(name).suffix.lower() not in package_ext:
+                              continue
+                          if info.flag_bits & 1:
+                              raise SystemExit(f"{label} archive contains an encrypted ZIP member: {info.filename}")
+                          if name in extracted_names or (game_dir / name).exists():
+                              raise SystemExit(f"Duplicate package filename while extracting {label}: {name}")
+                          total_uncompressed += info.file_size
+                          destination = game_dir / name
+                          with archive.open(info) as src, open(destination, "wb") as dst:
+                              shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
+                          if destination.stat().st_size != info.file_size:
+                              raise SystemExit(f"Incomplete ZIP extraction: {info.filename}")
+                          extracted_names.add(name)
+                          count += 1
+                          print(f"Extracted {label} package: {name} ({info.file_size:,} bytes)")
+              except zipfile.BadZipFile as exc:
+                  raise SystemExit(f"{label} file is not a valid ZIP archive: {exc}")
+              if count == 0:
+                  raise SystemExit(f"{label} ZIP contains no supported NSP/NSZ/XCI/XCZ package files.")
+              return total_uncompressed
+
+          update_bytes = extract_packages(update_zip, "BioShock update")
+          dlc_bytes = extract_packages(dlc_zip, "BioShock DLC")
+          if not any("0100ad10102b2000" in p.name.lower() for p in game_dir.iterdir()):
+              raise SystemExit("The staged folder is missing the BioShock base package.")
+          staged = [p for p in game_dir.iterdir() if p.is_file() and p.suffix.lower() in package_ext]
+          if len(staged) < 3:
+              raise SystemExit(f"Expected base + update + DLC packages after extraction; found {len(staged)} package(s).")
           if (root / "keys" / "prod.keys").stat().st_size == 0:
               raise SystemExit("Downloaded prod.keys is empty.")
-          if os.environ["BUILD_MODE"] != "validate":
-              total = sum(int(f.get("size", 0)) for f, _ in games)
-              free = shutil.disk_usage(root).free
-              required = max(5 * 1024**3, int(total * 2.0))
-              print(f"Free disk: {free:,}; estimated required: {required:,} bytes.")
-              if free < required:
-                  raise SystemExit("Not enough free runner disk space for the selected packages.")
-              seen = set()
-              for item, rel in games:
-                  if rel.name in seen:
-                      raise SystemExit(f"Duplicate package filename: {rel.name}")
-                  seen.add(rel.name)
-                  download(item, root / "game" / rel.name)
-          else:
-              print("Validation only: packages listed, not downloaded.")
+          free = shutil.disk_usage(root).free
+          package_bytes = sum(p.stat().st_size for p in staged)
+          required = max(12 * 1024**3, int(package_bytes * 2.0))
+          print(f"Staged package bytes: {package_bytes:,}; free disk: {free:,}; safety requirement: {required:,}.")
+          if free < required:
+              raise SystemExit("Not enough free runner disk space for package extraction and the NXNative build.")
+          print(f"Staging complete: {len(staged)} packages (update ZIP expanded to {update_bytes:,} bytes; DLC ZIP expanded to {dlc_bytes:,} bytes).")
           PY
           python "$RUNNER_TEMP/download_drive.py"
           rm -f "$RUNNER_TEMP/gdrive-service-account.json"
@@ -163,16 +238,16 @@ jobs:
           set -euo pipefail
           brew install xcodegen zstd glslang
           python -m pip install --upgrade pip
-          python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd
+          python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd nsz
 
       - name: Restore BioShock shader/build cache
         if: ${{ inputs.mode == 'build' }}
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/nxnative-work
-          key: nxnative-bioshock-remastered-iphone4gb-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
+          key: nxnative-bioshock-remastered-iphone12promax-6gb-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
           restore-keys: |
-            nxnative-bioshock-remastered-iphone4gb-
+            nxnative-bioshock-remastered-iphone12promax-6gb-
           save-always: true
 
       - name: Generate BioShock game survey
@@ -187,11 +262,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: BioShock-Remastered-game-survey
-          path: ${{ runner.temp }}/nxnative-input/game/*_survey/
+          path: ${{ runner.temp }}/nxnative-work/*_survey/
           if-no-files-found: error
           retention-days: 7
 
-      - name: Build unsigned BioShock iPhone IPA for 4 GB devices
+      - name: Build unsigned BioShock iPhone 12 Pro Max IPA (6 GB)
         if: ${{ inputs.mode == 'build' }}
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
@@ -201,9 +276,9 @@ jobs:
           python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
             --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
             --platform ios \
-            --older-iphone 128 \
+            --6gb \
             --work-dir "$RUNNER_TEMP/nxnative-work" \
-            --out "$RUNNER_TEMP/BioShock-Remastered-iPhone-4GB.ipa" \
+            --out "$RUNNER_TEMP/BioShock-Remastered-iPhone12ProMax-6GB.ipa" \
             --progress lines
 
       - name: Upload BioShock survey diagnostics after build
@@ -211,15 +286,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: BioShock-Remastered-game-survey-${{ github.run_number }}
-          path: ${{ runner.temp }}/nxnative-input/game/*_survey/
+          path: ${{ runner.temp }}/nxnative-work/*_survey/
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Upload BioShock iPhone IPA
+      - name: Upload BioShock iPhone 12 Pro Max IPA
         if: ${{ inputs.mode == 'build' }}
         uses: actions/upload-artifact@v4
         with:
-          name: BioShock-Remastered-iPhone-4GB-IPA
-          path: ${{ runner.temp }}/BioShock-Remastered-iPhone-4GB.ipa
+          name: BioShock-Remastered-iPhone12ProMax-6GB-IPA
+          path: ${{ runner.temp }}/BioShock-Remastered-iPhone12ProMax-6GB.ipa
           if-no-files-found: error
           retention-days: 7

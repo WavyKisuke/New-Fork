@@ -212,6 +212,26 @@ jobs:
                   raise SystemExit(f"{label} ZIP contains no supported NSP/NSZ/XCI/XCZ package files.")
               return total_uncompressed
 
+          def archive_package_bytes(path, label):
+              try:
+                  with zipfile.ZipFile(path) as archive:
+                      size = sum(info.file_size for info in archive.infolist()
+                                 if not info.is_dir()
+                                 and pathlib.Path(pathlib.PurePosixPath(info.filename).name).suffix.lower() in package_ext)
+              except zipfile.BadZipFile as exc:
+                  raise SystemExit(f"{label} file is not a valid ZIP archive: {exc}")
+              if size == 0:
+                  raise SystemExit(f"{label} ZIP contains no supported NSP/NSZ/XCI/XCZ package files.")
+              return size
+
+          base_bytes = sum(item.stat().st_size for item in game_dir.iterdir() if item.is_file())
+          expected_package_bytes = base_bytes + archive_package_bytes(update_zip, "BioShock update") + archive_package_bytes(dlc_zip, "BioShock DLC")
+          free_before_extract = shutil.disk_usage(root).free
+          required_before_extract = expected_package_bytes + max(10 * 1024**3, expected_package_bytes)
+          print(f"Expected expanded package bytes: {expected_package_bytes:,}; free disk before extraction: {free_before_extract:,}; required: {required_before_extract:,}.")
+          if free_before_extract < required_before_extract:
+              raise SystemExit("Not enough free runner disk space to extract the ZIP packages and complete the NXNative build.")
+
           update_bytes = extract_packages(update_zip, "BioShock update")
           dlc_bytes = extract_packages(dlc_zip, "BioShock DLC")
           if not any("0100ad10102b2000" in p.name.lower() for p in game_dir.iterdir()):
@@ -223,8 +243,8 @@ jobs:
               raise SystemExit("Downloaded prod.keys is empty.")
           free = shutil.disk_usage(root).free
           package_bytes = sum(p.stat().st_size for p in staged)
-          required = max(12 * 1024**3, int(package_bytes * 2.0))
-          print(f"Staged package bytes: {package_bytes:,}; free disk: {free:,}; safety requirement: {required:,}.")
+          required = max(10 * 1024**3, package_bytes)
+          print(f"Staged package bytes: {package_bytes:,}; free disk: {free:,}; remaining build-space requirement: {required:,}.")
           if free < required:
               raise SystemExit("Not enough free runner disk space for package extraction and the NXNative build.")
           print(f"Staging complete: {len(staged)} packages (update ZIP expanded to {update_bytes:,} bytes; DLC ZIP expanded to {dlc_bytes:,} bytes).")
@@ -262,7 +282,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: BioShock-Remastered-game-survey
-          path: ${{ runner.temp }}/nxnative-work/*_survey/
+          path: ${{ runner.temp }}/nxnative-input/game/*_survey/
           if-no-files-found: error
           retention-days: 7
 
@@ -286,7 +306,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: BioShock-Remastered-game-survey-${{ github.run_number }}
-          path: ${{ runner.temp }}/nxnative-work/*_survey/
+          path: ${{ runner.temp }}/nxnative-input/game/*_survey/
           if-no-files-found: warn
           retention-days: 14
 

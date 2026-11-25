@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bioshock-remastered-iphone-6gb
+  group: bioshock-remastered-iphone-no-bc
   cancel-in-progress: false
 
 jobs:

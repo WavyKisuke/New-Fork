@@ -1,0 +1,57 @@
+name: Universal Game Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_name:
+        description: "Label for this build"
+        required: true
+        type: string
+      artifact_path:
+        description: "Relative path to existing IPA/output files in the runner workspace"
+        required: true
+        type: string
+      artifact_name:
+        description: "Artifact name"
+        required: false
+        type: string
+        default: "game-port-output"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+
+      - name: Validate output path
+        shell: bash
+        env:
+          OUTPUT_PATH: ${{ inputs.artifact_path }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$OUTPUT_PATH" ]]; then
+            echo "Output path is required."
+            exit 1
+          fi
+          if [[ "$OUTPUT_PATH" == /* || "$OUTPUT_PATH" == *".."* ]]; then
+            echo "Use a relative path within the workspace."
+            exit 1
+          fi
+          if [[ ! -e "$OUTPUT_PATH" ]]; then
+            echo "No files found at: $OUTPUT_PATH"
+            exit 1
+          fi
+          find "$OUTPUT_PATH" -maxdepth 3 -type f -print
+
+      - name: Upload output as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}-${{ inputs.game_name }}
+          path: ${{ inputs.artifact_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

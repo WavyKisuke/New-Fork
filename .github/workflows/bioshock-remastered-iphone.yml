@@ -25,6 +25,11 @@ on:
         type: string
         required: false
         default: ""
+      release_tag:
+        description: "Release tag to create/update in the private Wavy23 repository"
+        type: string
+        required: true
+        default: "bioshock-remastered-iphone12promax-no-bc"
 
 permissions:
   contents: read
@@ -350,8 +355,69 @@ jobs:
             --platform ios \
             --work-dir "$RUNNER_TEMP/nxnative-work" \
             --env-file "$RUNNER_TEMP/bioshock-env.txt" \
+            --romfs separate \
+            --keep-extracted \
             --out "$RUNNER_TEMP/BioShock-Remastered-iPhone12ProMax-no-bc.ipa" \
             --progress lines
+
+      - name: Split full BioShock RomFS and publish parts plus IPA to private Wavy23
+        if: ${{ inputs.mode == 'build' }}
+        env:
+          GH_TOKEN: ${{ secrets.WAVY23_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}" || { echo "::error::Missing WAVY23_TOKEN. Add a fine-grained token with Contents read/write access to the private WavyKisuke/Wavy23 repository."; exit 1; }
+          ipa="$RUNNER_TEMP/BioShock-Remastered-iPhone12ProMax-no-bc.ipa"
+          test -s "$ipa"
+          romfs="$(python3 - "$RUNNER_TEMP/nxnative-work/extract" <<'PY'
+          import re, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          candidates = []
+          for folder in root.iterdir():
+              if folder.is_dir() and re.fullmatch(r"v[0-9]+", folder.name):
+                  image = folder / "RomFS.img"
+                  if image.is_file() and image.stat().st_size:
+                      candidates.append((int(folder.name[1:]), image))
+          if not candidates:
+              raise SystemExit("No complete, non-empty RomFS.img was generated.")
+          print(max(candidates, key=lambda item: item[0])[1])
+          PY
+          )"
+          test -s "$romfs"
+          echo "Complete RomFS size: $(du -h "$romfs" | cut -f1)"
+          # Keep every release asset below GitHub's 2 GiB per-file ceiling.
+          parts="$RUNNER_TEMP/bioshock-release-assets"
+          mkdir -p "$parts"
+          split -b 1900M -d -a 3 "$romfs" "$parts/BioShock-RomFS.img.part-"
+          part_count="$(find "$parts" -maxdepth 1 -type f -name 'BioShock-RomFS.img.part-*' | wc -l | tr -d ' ')"
+          test "$part_count" -ge 2
+          cat > "$parts/REASSEMBLE.txt" <<'EOF'
+          BioShock Remastered external RomFS image
+          Download every BioShock-RomFS.img.part-NNN file into the same directory.
+          macOS/Linux reassembly:
+            cat BioShock-RomFS.img.part-* > RomFS.img
+          Windows PowerShell reassembly:
+            Get-Content BioShock-RomFS.img.part-* -AsByteStream | Set-Content RomFS.img -AsByteStream
+          Verify the resulting image against SHA256SUMS before using it.
+          EOF
+          (cd "$parts" && shasum -a 256 BioShock-RomFS.img.part-* > SHA256SUMS)
+          # The original multi-GB image is no longer needed once all parts and checksums exist.
+          rm -f "$romfs"
+          # Confirm the destination repository is private before publishing game data.
+          private="$(gh api repos/WavyKisuke/Wavy23 --jq '.private')"
+          test "$private" = "true" || { echo "::error::Wavy23 is not private; refusing to publish BioShock game data."; exit 1; }
+          if ! gh release view "$RELEASE_TAG" --repo WavyKisuke/Wavy23 >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo WavyKisuke/Wavy23 \
+              --title "BioShock Remastered iPhone 12 Pro Max (no-bc)" \
+              --notes "Private BioShock Remastered iPhone build. Download the IPA and every RomFS part. Reassemble the complete image using REASSEMBLE.txt and verify SHA256SUMS."
+          fi
+          gh release upload "$RELEASE_TAG" --repo WavyKisuke/Wavy23 --clobber \
+            "$ipa" "$parts"/BioShock-RomFS.img.part-* "$parts/SHA256SUMS" "$parts/REASSEMBLE.txt"
+          echo "Published IPA and $part_count complete-image parts to private Wavy23 release $RELEASE_TAG."
+          rm -rf "$parts"
 
       - name: Upload BioShock survey diagnostics after build
         if: ${{ always() && inputs.mode == 'build' }}

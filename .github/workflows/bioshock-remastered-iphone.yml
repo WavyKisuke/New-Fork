@@ -363,12 +363,12 @@ jobs:
       - name: Split full BioShock RomFS and publish parts plus IPA to private Wavy23
         if: ${{ inputs.mode == 'build' }}
         env:
-          GH_TOKEN: ${{ secrets.WAVY23_TOKEN }}
+          GH_TOKEN: ${{ secrets.WAVY23_RELEASE_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${GH_TOKEN:-}" || { echo "::error::Missing WAVY23_TOKEN. Add a fine-grained token with Contents read/write access to the private WavyKisuke/Wavy23 repository."; exit 1; }
+          test -n "${GH_TOKEN:-}" || { echo "::error::Missing WAVY23_RELEASE_TOKEN. Add a fine-grained token with Contents read/write access to the private WavyKisuke/Wavy23 repository."; exit 1; }
           ipa="$RUNNER_TEMP/BioShock-Remastered-iPhone12ProMax-no-bc.ipa"
           test -s "$ipa"
           romfs="$(python3 - "$RUNNER_TEMP/nxnative-work/extract" <<'PY'

@@ -4,77 +4,74 @@ on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: "Name used to label the artifact"
+        description: "Label for the downloaded IPA artifact"
         required: true
         type: string
+        default: "Qliphah"
       artifact_path:
-        description: "Workspace folder to collect and upload files"
+        description: "Workspace folder for fetched IPA files"
         required: true
         type: string
         default: "output"
-      fetch_wavy23_release:
-        description: "Fetch assets from a Wavy23 release first"
-        required: false
-        type: boolean
-        default: false
       release_tag:
-        description: "Tag in WavyKisuke/Wavy23 (required if fetching)"
-        required: false
+        description: "Wavy23 release tag"
+        required: true
         type: string
+        default: "Qliphah-iphone-port-v1"
       asset_pattern:
-        description: "Optional filename glob to fetch (leave blank for all release assets)"
+        description: "Release asset pattern (default: IPA files only)"
         required: false
         type: string
+        default: "*.ipa"
       artifact_name:
-        description: "Artifact label"
+        description: "GitHub Actions artifact label"
         required: false
         type: string
-        default: "game-port-output"
+        default: "ipa-output"
 
 permissions:
   contents: read
 
 jobs:
-  package:
+  fetch-and-package-ipa:
     runs-on: macos-15
     steps:
-      - name: Checkout selected branch
-        uses: actions/checkout@v4
-
-      - name: Validate folder and fetch Wavy23 release assets (optional)
+      - name: Fetch IPA release asset(s) from Wavy23
         shell: bash
         env:
           OUTPUT_PATH: ${{ inputs.artifact_path }}
-          FETCH_RELEASE: ${{ inputs.fetch_wavy23_release }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           ASSET_PATTERN: ${{ inputs.asset_pattern }}
           GH_TOKEN: ${{ secrets.WAVY23_RELEASE_TOKEN }}
         run: |
           set -euo pipefail
-          [[ -n "$OUTPUT_PATH" && "$OUTPUT_PATH" != /* && "$OUTPUT_PATH" != *".."* ]] || { echo "Use a safe relative output folder."; exit 1; }
+          [[ -n "$OUTPUT_PATH" && "$OUTPUT_PATH" != /* && "$OUTPUT_PATH" != *".."* ]] || { echo "::error::Use a safe relative output folder."; exit 1; }
+          [[ -n "$RELEASE_TAG" ]] || { echo "::error::Release tag is required."; exit 1; }
+          [[ -n "$GH_TOKEN" ]] || { echo "::error::Missing WAVY23_RELEASE_TOKEN secret."; exit 1; }
           mkdir -p "$OUTPUT_PATH"
-          if [[ "$FETCH_RELEASE" == "true" ]]; then
-            [[ -n "$RELEASE_TAG" ]] || { echo "release_tag is required when release fetching is enabled."; exit 1; }
-            [[ -n "$GH_TOKEN" ]] || { echo "Set WAVY23_RELEASE_TOKEN in repository Actions secrets."; exit 1; }
-            if [[ -n "$ASSET_PATTERN" ]]; then
-              gh release download "$RELEASE_TAG" --repo WavyKisuke/Wavy23 --dir "$OUTPUT_PATH" --pattern "$ASSET_PATTERN"
-            else
-              gh release download "$RELEASE_TAG" --repo WavyKisuke/Wavy23 --dir "$OUTPUT_PATH"
-            fi
-          fi
-          FILES=$(find "$OUTPUT_PATH" -type f -print)
-          [[ -n "$FILES" ]] || { echo "No files found in output folder. Fetch a release or place files in this folder during a build."; exit 1; }
-          echo "Files collected:" 
-          echo "$FILES"
-          echo "## Collected files — ${{ inputs.game_name }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "$FILES" >> "$GITHUB_STEP_SUMMARY"
-          du -sh "$OUTPUT_PATH" || true
+          gh release download "$RELEASE_TAG" --repo WavyKisuke/Wavy23 --dir "$OUTPUT_PATH" --pattern "${ASSET_PATTERN:-*.ipa}"
+          shopt -s nullglob
+          ipas=( "$OUTPUT_PATH"/*.ipa )
+          (( ${#ipas[@]} > 0 )) || { echo "::error::No IPA assets found in release $RELEASE_TAG."; exit 1; }
+          for ipa in "${ipas[@]}"; do
+            echo "Checking IPA archive: $ipa"
+            unzip -t "$ipa" >/dev/null
+            unzip -Z1 "$ipa" | grep -Eq '^Payload/[^/]+\.app/' || { echo "::error::Archive is missing a Payload/*.app bundle: $ipa"; exit 1; }
+            echo "Validated: $ipa"
+          done
+          {
+            echo "## IPA files fetched from Wavy23"
+            echo "- Release tag: $RELEASE_TAG"
+            echo "- Files:"
+            printf -- "- %s\n" "${ipas[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          du -sh "$OUTPUT_PATH"
 
-      - name: Upload collected files as artifact
+      - name: Upload IPA(s) as GitHub Actions artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_name }}-${{ inputs.game_name }}
-          path: ${{ inputs.artifact_path }}/
+          path: ${{ inputs.artifact_path }}/*.ipa
           if-no-files-found: error
           compression-level: 0
           retention-days: 7

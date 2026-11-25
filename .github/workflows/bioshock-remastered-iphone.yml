@@ -12,6 +12,14 @@ on:
           - validate
           - survey
           - build
+      fps_target:
+        description: "Frame-rate target embedded in the BioShock app"
+        type: choice
+        required: true
+        default: '30'
+        options:
+          - '30'
+          - '60'
       dlc_file_id:
         description: "Optional Google Drive file ID for the BioShock DLC ZIP (auto-detected by filename if blank)"
         type: string
@@ -327,13 +335,21 @@ jobs:
         if: ${{ inputs.mode == 'build' }}
         env:
           DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+          BIOSHOCK_FPS_TARGET: ${{ inputs.fps_target }}
         run: |
           set -euo pipefail
+          case "$BIOSHOCK_FPS_TARGET" in
+            30|60) ;;
+            *) echo "::error::FPS target must be 30 or 60."; exit 1 ;;
+          esac
           mkdir -p "$RUNNER_TEMP/nxnative-work"
+          printf 'DM_FPS_TARGET=%s\\n' "$BIOSHOCK_FPS_TARGET" > "$RUNNER_TEMP/bioshock-env.txt"
+          echo "Embedding DM_FPS_TARGET=$BIOSHOCK_FPS_TARGET in the BioShock app."
           python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
             --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
             --platform ios \
             --work-dir "$RUNNER_TEMP/nxnative-work" \
+            --env-file "$RUNNER_TEMP/bioshock-env.txt" \
             --out "$RUNNER_TEMP/BioShock-Remastered-iPhone12ProMax-no-bc.ipa" \
             --progress lines
 

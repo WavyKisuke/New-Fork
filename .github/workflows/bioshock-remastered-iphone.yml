@@ -7,7 +7,7 @@ on:
         description: "Validate Drive, generate the game survey, or build the IPA"
         type: choice
         required: true
-        default: validate
+        default: build
         options:
           - validate
           - survey

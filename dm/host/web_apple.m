@@ -69,6 +69,10 @@ static NSString *const SHIM = @R"JS(
   };
   window.nx = stub(nx, '');
 
+  // BioShock's legal pages call window.close() to finish first-run acceptance.
+  // Match Switch web-applet behavior by returning exit reason 4.
+  window.close = function () { post({k: 'end', r: 4}); };
+
   // Sounds follow the host's audio: muted, every connection to the speakers goes through a gain of 0 (the sounds still play and end, for pages that wait for them)
   if (cfg.muted && window.AudioNode) {
     var connect = AudioNode.prototype.connect, quiet = new WeakMap();

@@ -343,7 +343,7 @@ jobs:
             *) echo "::error::FPS target must be 30 or 60."; exit 1 ;;
           esac
           mkdir -p "$RUNNER_TEMP/nxnative-work"
-          printf 'DM_FPS_TARGET=%s\\n' "$BIOSHOCK_FPS_TARGET" > "$RUNNER_TEMP/bioshock-env.txt"
+          printf '%s\n' "DM_FPS_TARGET=$BIOSHOCK_FPS_TARGET" > "$RUNNER_TEMP/bioshock-env.txt"
           echo "Embedding DM_FPS_TARGET=$BIOSHOCK_FPS_TARGET in the BioShock app."
           python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
             --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \

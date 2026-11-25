@@ -1,77 +1,240 @@
-name: Universal Game Artifact
+name: NXNative Universal iPhone IPA Build
 
 on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: "Label for the downloaded IPA artifact"
+        description: "Game name shown in the artifact and release"
         required: true
         type: string
-        default: "Qliphah"
-      artifact_path:
-        description: "Workspace folder for fetched IPA files"
+        default: "Qliphah in Providence's Shadow"
+      title_id:
+        description: "Base game title ID (16 hexadecimal digits)"
         required: true
         type: string
-        default: "output"
+        default: "01008E20257E0000"
       release_tag:
-        description: "Wavy23 release tag"
+        description: "Wavy23 release tag containing the game XCI/NSP and optional DLC ZIP"
         required: true
         type: string
         default: "Qliphah-iphone-port-v1"
-      asset_pattern:
-        description: "Release asset pattern (default: IPA files only)"
-        required: false
+      output_tag:
+        description: "Release tag to publish the compiled IPA and RomFS parts"
+        required: true
         type: string
-        default: "*.ipa"
-      artifact_name:
-        description: "GitHub Actions artifact label"
-        required: false
-        type: string
-        default: "ipa-output"
+        default: "Qliphah-iphone-port-v1"
 
 permissions:
   contents: read
 
+concurrency:
+  group: nxnative-universal-build-${{ inputs.title_id }}
+  cancel-in-progress: false
+
 jobs:
-  fetch-and-package-ipa:
-    runs-on: macos-15
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 360
     steps:
-      - name: Fetch IPA release asset(s) from Wavy23
+      - name: Check out NXNative source
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 27.2
         shell: bash
-        env:
-          OUTPUT_PATH: ${{ inputs.artifact_path }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          ASSET_PATTERN: ${{ inputs.asset_pattern }}
-          GH_TOKEN: ${{ secrets.WAVY23_RELEASE_TOKEN }}
         run: |
           set -euo pipefail
-          [[ -n "$OUTPUT_PATH" && "$OUTPUT_PATH" != /* && "$OUTPUT_PATH" != *".."* ]] || { echo "::error::Use a safe relative output folder."; exit 1; }
-          [[ -n "$RELEASE_TAG" ]] || { echo "::error::Release tag is required."; exit 1; }
-          [[ -n "$GH_TOKEN" ]] || { echo "::error::Missing WAVY23_RELEASE_TOKEN secret."; exit 1; }
-          mkdir -p "$OUTPUT_PATH"
-          gh release download "$RELEASE_TAG" --repo WavyKisuke/Wavy23 --dir "$OUTPUT_PATH" --pattern "${ASSET_PATTERN:-*.ipa}"
-          shopt -s nullglob
-          ipas=( "$OUTPUT_PATH"/*.ipa )
-          (( ${#ipas[@]} > 0 )) || { echo "::error::No IPA assets found in release $RELEASE_TAG."; exit 1; }
-          for ipa in "${ipas[@]}"; do
-            echo "Checking IPA archive: $ipa"
-            unzip -t "$ipa" >/dev/null
-            unzip -Z1 "$ipa" | grep -Eq '^Payload/[^/]+\.app/' || { echo "::error::Archive is missing a Payload/*.app bundle: $ipa"; exit 1; }
-            echo "Validated: $ipa"
-          done
-          {
-            echo "## IPA files fetched from Wavy23"
-            echo "- Release tag: $RELEASE_TAG"
-            echo "- Files:"
-            printf -- "- %s\n" "${ipas[@]}"
-          } >> "$GITHUB_STEP_SUMMARY"
-          du -sh "$OUTPUT_PATH"
+          test -d "/Applications/Xcode_27.2.app/Contents/Developer" || {
+            echo "::error::Xcode 27.2 is required by this NXNative shader toolchain."
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
+            exit 1
+          }
+          sudo xcode-select -s "/Applications/Xcode_27.2.app/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -version | grep -Fq "Xcode 27.2"
 
-      - name: Upload IPA(s) as GitHub Actions artifact
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install NXNative build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install xcodegen zstd glslang
+          python -m pip install --upgrade pip
+          python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd zbic nsz
+
+      - name: Fetch game packages from Wavy23 release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WAVY23_RELEASE_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PROD_KEYS: ${{ secrets.PROD_KEYS }}
+          TITLE_ID: ${{ inputs.title_id }}
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}" || {
+            echo "::error::Missing WAVY23_RELEASE_TOKEN. It needs Contents read access to Wavy23."
+            exit 1
+          }
+          test -n "${PROD_KEYS:-}" || {
+            echo "::error::Missing PROD_KEYS repository secret. NXNative needs your own prod.keys to process XCI/NSP inputs. Add it under Settings > Secrets and variables > Actions."
+            exit 1
+          }
+          [[ "$TITLE_ID" =~ ^[0-9A-Fa-f]{16}$ ]] || {
+            echo "::error::title_id must contain exactly 16 hexadecimal characters."
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/nxnative-input/game" "$RUNNER_TEMP/nxnative-input/keys"
+          printf '%s' "$PROD_KEYS" > "$RUNNER_TEMP/nxnative-input/keys/prod.keys"
+          chmod 600 "$RUNNER_TEMP/nxnative-input/keys/prod.keys"
+          cd "$RUNNER_TEMP/nxnative-input/game"
+          gh release download "$RELEASE_TAG" --repo WavyKisuke/Wavy23 --pattern '*.xci' || true
+          gh release download "$RELEASE_TAG" --repo WavyKisuke/Wavy23 --pattern '*.nsp' || true
+          gh release download "$RELEASE_TAG" --repo WavyKisuke/Wavy23 --pattern '*.nsz' || true
+          gh release download "$RELEASE_TAG" --repo WavyKisuke/Wavy23 --pattern '*.zip' || true
+          python - "$TITLE_ID" <<'PY'
+          import pathlib, sys, zipfile
+          root = pathlib.Path.cwd()
+          title_id = sys.argv[1].lower()
+          exts = {".xci", ".xcz", ".nsp", ".nsz"}
+          packages = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in exts]
+          if not any(title_id in p.name.lower() for p in packages):
+              raise SystemExit(f"No base package filename contains title ID {title_id}. Downloaded: {[p.name for p in packages]}")
+          for archive in list(root.glob("*.zip")):
+              try:
+                  with zipfile.ZipFile(archive) as z:
+                      for info in z.infolist():
+                          if info.is_dir():
+                              continue
+                          name = pathlib.PurePosixPath(info.filename).name
+                          if not name or pathlib.Path(name).suffix.lower() not in exts:
+                              continue
+                          target = root / name
+                          if target.exists():
+                              raise SystemExit(f"Duplicate package name in DLC archive: {name}")
+                          with z.open(info) as src, target.open("wb") as dst:
+                              while chunk := src.read(8 * 1024 * 1024):
+                                  dst.write(chunk)
+                          if target.stat().st_size != info.file_size:
+                              raise SystemExit(f"Incomplete archive extraction: {name}")
+                          print(f"Extracted package from {archive.name}: {name} ({info.file_size:,} bytes)")
+              except zipfile.BadZipFile:
+                  print(f"Skipping non-ZIP release asset: {archive.name}")
+          packages = [p for p in root.iterdir() if p.is_file() and p.suffix.lower() in exts]
+          if not any(title_id in p.name.lower() for p in packages):
+              raise SystemExit("Base XCI/NSP matching the requested title ID was not staged.")
+          print("NXNative input packages:")
+          for p in packages:
+              print(f"  {p.name}: {p.stat().st_size:,} bytes")
+          PY
+          test -s "$RUNNER_TEMP/nxnative-input/keys/prod.keys"
+
+      - name: Restore NXNative game build cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nxnative-work
+          key: nxnative-${{ inputs.title_id }}-xcode27.2-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**', 'scripts/**') }}
+          restore-keys: |
+            nxnative-${{ inputs.title_id }}-xcode27.2-
+
+      - name: Compile game with NXNative into an iOS IPA
+        shell: bash
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+          TITLE_ID: ${{ inputs.title_id }}
+          GAME_NAME: ${{ inputs.game_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nxnative-work"
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
+            --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
+            --title-id "$TITLE_ID" \
+            --platform ios \
+            --romfs separate \
+            --keep-extracted \
+            --work-dir "$RUNNER_TEMP/nxnative-work" \
+            --out "$RUNNER_TEMP/nxnative-output.ipa" \
+            --progress lines
+          test -s "$RUNNER_TEMP/nxnative-output.ipa"
+          unzip -t "$RUNNER_TEMP/nxnative-output.ipa" >/dev/null
+          unzip -Z1 "$RUNNER_TEMP/nxnative-output.ipa" | grep -Eq '^Payload/[^/]+\.app/' || {
+            echo "::error::NXNative output is not a valid iOS Payload/*.app IPA."
+            exit 1
+          }
+          echo "NXNative compiled $GAME_NAME ($TITLE_ID) successfully."
+          du -h "$RUNNER_TEMP/nxnative-output.ipa"
+
+      - name: Prepare complete RomFS image parts for Wavy23
+        shell: bash
+        env:
+          TITLE_ID: ${{ inputs.title_id }}
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/nxnative-work/extract" "$TITLE_ID" "$RUNNER_TEMP/nxnative-release-assets" <<'PY'
+          import pathlib, re, sys
+          root, title_id, out = pathlib.Path(sys.argv[1]), sys.argv[2].lower(), pathlib.Path(sys.argv[3])
+          out.mkdir(parents=True, exist_ok=True)
+          matches = []
+          if root.exists():
+              for version in root.glob("v*"):
+                  if version.is_dir() and re.fullmatch(r"v[0-9]+", version.name):
+                      image = version / "RomFS.img"
+                      if image.is_file() and image.stat().st_size:
+                          matches.append((int(version.name[1:]), image))
+          if not matches:
+              raise SystemExit("NXNative finished but no separate RomFS.img was found under the build extraction directory.")
+          source = max(matches, key=lambda x: x[0])[1]
+          (out / "RomFS.img.path.txt").write_text(str(source) + "\n")
+          print(f"Found complete RomFS image: {source} ({source.stat().st_size:,} bytes)")
+          PY
+          romfs="$(cat "$RUNNER_TEMP/nxnative-release-assets/RomFS.img.path.txt")"
+          split -b 1900m -a 3 "$romfs" "$RUNNER_TEMP/nxnative-release-assets/RomFS.img.part-"
+          (cd "$RUNNER_TEMP/nxnative-release-assets" && shasum -a 256 RomFS.img.part-* > SHA256SUMS)
+          shasum -a 256 "$romfs" | awk '{print $1 "  RomFS.img"}' > "$RUNNER_TEMP/nxnative-release-assets/FULL_IMAGE_SHA256.txt"
+          cat > "$RUNNER_TEMP/nxnative-release-assets/REASSEMBLE.txt" <<'EOF'
+          Download every RomFS.img.part-NNN file into one folder.
+          macOS/Linux: cat RomFS.img.part-* > RomFS.img
+          Windows PowerShell: Get-Content RomFS.img.part-* -AsByteStream | Set-Content RomFS.img -AsByteStream
+          Verify the result against FULL_IMAGE_SHA256.txt and verify parts with SHA256SUMS.
+          EOF
+
+      - name: Upload compiled IPA and RomFS parts as GitHub Actions artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.artifact_name }}-${{ inputs.game_name }}
-          path: ${{ inputs.artifact_path }}/*.ipa
+          name: NXNative-${{ inputs.game_name }}-${{ inputs.title_id }}-IPA-and-RomFS
+          path: |
+            ${{ runner.temp }}/nxnative-output.ipa
+            ${{ runner.temp }}/nxnative-release-assets/RomFS.img.part-*
+            ${{ runner.temp }}/nxnative-release-assets/SHA256SUMS
+            ${{ runner.temp }}/nxnative-release-assets/FULL_IMAGE_SHA256.txt
+            ${{ runner.temp }}/nxnative-release-assets/REASSEMBLE.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+      - name: Publish compiled IPA and RomFS parts to private Wavy23
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WAVY23_RELEASE_TOKEN }}
+          OUTPUT_TAG: ${{ inputs.output_tag }}
+          GAME_NAME: ${{ inputs.game_name }}
+          TITLE_ID: ${{ inputs.title_id }}
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}" || { echo "::error::Missing WAVY23_RELEASE_TOKEN."; exit 1; }
+          private="$(gh api repos/WavyKisuke/Wavy23 --jq '.private')"
+          test "$private" = "true" || { echo "::error::Wavy23 is not private; refusing to publish game files."; exit 1; }
+          if ! gh release view "$OUTPUT_TAG" --repo WavyKisuke/Wavy23 >/dev/null 2>&1; then
+            gh release create "$OUTPUT_TAG" --repo WavyKisuke/Wavy23 \
+              --title "$GAME_NAME NXNative iPhone port" \
+              --notes "NXNative iOS IPA build for $GAME_NAME ($TITLE_ID), plus split RomFS image parts and SHA-256 checksums."
+          fi
+          gh release upload "$OUTPUT_TAG" --repo WavyKisuke/Wavy23 --clobber \
+            "$RUNNER_TEMP/nxnative-output.ipa" \
+            "$RUNNER_TEMP/nxnative-release-assets"/RomFS.img.part-* \
+            "$RUNNER_TEMP/nxnative-release-assets/SHA256SUMS" \
+            "$RUNNER_TEMP/nxnative-release-assets/FULL_IMAGE_SHA256.txt" \
+            "$RUNNER_TEMP/nxnative-release-assets/REASSEMBLE.txt"
+          echo "Published compiled IPA and RomFS parts to Wavy23 release $OUTPUT_TAG."

@@ -391,7 +391,7 @@ jobs:
           # Keep every release asset below GitHub's 2 GiB per-file ceiling.
           parts="$RUNNER_TEMP/bioshock-release-assets"
           mkdir -p "$parts"
-          split -b 1900M -d -a 3 "$romfs" "$parts/BioShock-RomFS.img.part-"
+          split -b 1900m -a 3 "$romfs" "$parts/BioShock-RomFS.img.part-"
           part_count="$(find "$parts" -maxdepth 1 -type f -name 'BioShock-RomFS.img.part-*' | wc -l | tr -d ' ')"
           test "$part_count" -ge 2
           cat > "$parts/REASSEMBLE.txt" <<'EOF'
@@ -401,9 +401,10 @@ jobs:
             cat BioShock-RomFS.img.part-* > RomFS.img
           Windows PowerShell reassembly:
             Get-Content BioShock-RomFS.img.part-* -AsByteStream | Set-Content RomFS.img -AsByteStream
-          Verify the resulting image against SHA256SUMS before using it.
+          Verify each downloaded part against SHA256SUMS. The reconstructed RomFS.img must match FULL_IMAGE_SHA256.txt.
           EOF
           (cd "$parts" && shasum -a 256 BioShock-RomFS.img.part-* > SHA256SUMS)
+          shasum -a 256 "$romfs" | awk '{print $1 "  RomFS.img"}' > "$parts/FULL_IMAGE_SHA256.txt"
           # The original multi-GB image is no longer needed once all parts and checksums exist.
           rm -f "$romfs"
           # Confirm the destination repository is private before publishing game data.
@@ -415,7 +416,7 @@ jobs:
               --notes "Private BioShock Remastered iPhone build. Download the IPA and every RomFS part. Reassemble the complete image using REASSEMBLE.txt and verify SHA256SUMS."
           fi
           gh release upload "$RELEASE_TAG" --repo WavyKisuke/Wavy23 --clobber \
-            "$ipa" "$parts"/BioShock-RomFS.img.part-* "$parts/SHA256SUMS" "$parts/REASSEMBLE.txt"
+            "$ipa" "$parts"/BioShock-RomFS.img.part-* "$parts/SHA256SUMS" "$parts/FULL_IMAGE_SHA256.txt" "$parts/REASSEMBLE.txt"
           echo "Published IPA and $part_count complete-image parts to private Wavy23 release $RELEASE_TAG."
           rm -rf "$parts"
 

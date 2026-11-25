@@ -4,15 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       game_name:
-        description: "Label for this build"
+        description: "Name used to label the artifact"
         required: true
         type: string
       artifact_path:
-        description: "Relative path to existing IPA/output files in the runner workspace"
+        description: "Folder in the workspace containing build outputs (IPA, IMG, logs)"
         required: true
         type: string
+        default: "output"
       artifact_name:
-        description: "Artifact name"
+        description: "Artifact label"
         required: false
         type: string
         default: "game-port-output"
@@ -27,31 +28,29 @@ jobs:
       - name: Checkout selected branch
         uses: actions/checkout@v4
 
-      - name: Validate output path
+      - name: Validate and inventory outputs
         shell: bash
         env:
           OUTPUT_PATH: ${{ inputs.artifact_path }}
+          GAME_NAME: ${{ inputs.game_name }}
         run: |
           set -euo pipefail
-          if [[ -z "$OUTPUT_PATH" ]]; then
-            echo "Output path is required."
-            exit 1
-          fi
-          if [[ "$OUTPUT_PATH" == /* || "$OUTPUT_PATH" == *".."* ]]; then
-            echo "Use a relative path within the workspace."
-            exit 1
-          fi
-          if [[ ! -e "$OUTPUT_PATH" ]]; then
-            echo "No files found at: $OUTPUT_PATH"
-            exit 1
-          fi
-          find "$OUTPUT_PATH" -maxdepth 3 -type f -print
+          [[ -n "$OUTPUT_PATH" ]] || { echo "Output path is required."; exit 1; }
+          [[ "$OUTPUT_PATH" != /* && "$OUTPUT_PATH" != *".."* ]] || { echo "Use a safe relative path."; exit 1; }
+          [[ -d "$OUTPUT_PATH" ]] || { echo "Output directory not found: $OUTPUT_PATH"; exit 1; }
+          FILES=$(find "$OUTPUT_PATH" -type f -print)
+          [[ -n "$FILES" ]] || { echo "No files found under $OUTPUT_PATH"; exit 1; }
+          echo "## Artifact inventory — $GAME_NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Files included:' >> "$GITHUB_STEP_SUMMARY"
+          echo "$FILES" >> "$GITHUB_STEP_SUMMARY"
+          du -sh "$OUTPUT_PATH" || true
+          find "$OUTPUT_PATH" -type f -print
 
-      - name: Upload output as artifact
+      - name: Upload build output
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_name }}-${{ inputs.game_name }}
-          path: ${{ inputs.artifact_path }}
+          path: ${{ inputs.artifact_path }}/
           if-no-files-found: error
           compression-level: 0
           retention-days: 7

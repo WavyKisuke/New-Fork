@@ -1,0 +1,39 @@
+name: Test a-Shell file download
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Connect GitHub Actions to iPhone over Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          ping: 100.127.76.121
+
+      - name: Download smallfile from a-Shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="http://100.127.76.121:8765/smallfile"
+          echo "Downloading test file from a-Shell..."
+          START=$(date +%s)
+          curl --fail --show-error --location --max-time 300 --output /tmp/smallfile "${URL}"
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+          SIZE=$(stat -c '%s' /tmp/smallfile)
+          SHA=$(sha256sum /tmp/smallfile | awk '{print $1}')
+          echo "Downloaded bytes: ${SIZE}"
+          echo "Elapsed seconds: ${ELAPSED}"
+          echo "SHA-256: ${SHA}"
+          if [ "${SIZE}" -eq 0 ]; then
+            echo "::error::Downloaded file is empty"
+            exit 1
+          fi
+          echo "File transfer test passed."

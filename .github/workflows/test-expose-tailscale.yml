@@ -1,0 +1,36 @@
+name: Test Expose over Tailscale
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-expose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Connect GitHub Actions to iPhone over Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          ping: 100.127.76.121
+
+      - name: Test Expose HTTP server
+        env:
+          EXPOSE_TOKEN: ${{ secrets.EXPOSE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST="http://100.127.76.121:8080"
+          echo "Testing Expose HTTP endpoint through Tailscale"
+          CODE=$(curl --silent --show-error --max-time 25 -o /tmp/expose-body -w '%{http_code}' "${HOST}/?token=${EXPOSE_TOKEN}")
+          echo "HTTP status: ${CODE}"
+          if [ "${CODE}" -ge 200 ] && [ "${CODE}" -lt 400 ]; then
+            echo "Expose endpoint is reachable and responded successfully."
+          else
+            echo "::error::Expose server returned HTTP ${CODE}"
+            head -c 500 /tmp/expose-body || true
+            exit 1
+          fi

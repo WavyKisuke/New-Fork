@@ -18,14 +18,28 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 360
     steps:
+      # Checkout first, before joining the tailnet, so GitHub DNS/network access
+      # is available for the initial repository fetch.
+      - name: Check out NXNative
+        uses: actions/checkout@v4
+
       - name: Connect GitHub Actions to the iPhone file server
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
+          args: --accept-dns=false
           ping: 100.127.76.121
 
-      - name: Check out NXNative
-        uses: actions/checkout@v4
+      - name: Verify GitHub DNS and iPhone file-server access
+        run: |
+          set -euo pipefail
+          echo "Checking GitHub DNS without changing runner DNS settings..."
+          dscacheutil -q host -a name github.com
+          curl --fail --silent --show-error --head --max-time 15 https://github.com/ >/dev/null
+          echo "GitHub DNS/HTTPS is reachable."
+          echo "Checking the iPhone-hosted file server..."
+          curl --fail --silent --show-error --head --max-time 15 http://100.127.76.121:8080/ >/dev/null
+          echo "iPhone file server is reachable."
 
       - name: Select compatible Xcode and Metal toolchain
         run: |

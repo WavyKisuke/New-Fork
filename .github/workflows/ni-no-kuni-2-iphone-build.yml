@@ -30,10 +30,23 @@ jobs:
           args: --accept-dns=false
           ping: 100.127.76.121
 
+      - name: Restore runner DNS after Tailscale setup
+        run: |
+          set -euo pipefail
+          # tailscale/github-action may apply tailnet DNS even when --accept-dns=false
+          # is supplied. Explicitly disable DNS acceptance and flush macOS caches.
+          sudo tailscale set --accept-dns=false
+          sudo dscacheutil -flushcache
+          sudo killall -HUP mDNSResponder || true
+          echo "DNS configuration after Tailscale:"
+          scutil --dns | sed -n '1,100p'
+          echo "Resolver check:"
+          dscacheutil -q host -a name github.com
+
       - name: Verify GitHub DNS and iPhone file-server access
         run: |
           set -euo pipefail
-          echo "Checking GitHub DNS without changing runner DNS settings..."
+          echo "Checking GitHub DNS and HTTPS..."
           dscacheutil -q host -a name github.com
           curl --fail --silent --show-error --head --max-time 15 https://github.com/ >/dev/null
           echo "GitHub DNS/HTTPS is reachable."

@@ -1,0 +1,191 @@
+name: Ni no Kuni II iPhone IPA (Fresh Workflow)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ni-no-kuni-2-iphone
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ni-no-kuni-2-iphone-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 360
+    steps:
+      - name: Connect GitHub Actions to the iPhone file server
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          ping: 100.127.76.121
+
+      - name: Check out NXNative
+        uses: actions/checkout@v4
+
+      - name: Select compatible Xcode and Metal toolchain
+        run: |
+          set -euo pipefail
+          if [ -d "/Applications/Xcode-27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode-27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.2.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.2.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=" >> "$GITHUB_ENV"
+          elif [ -d "/Applications/Xcode_27.1.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode_27.1.app/Contents/Developer"
+            echo "NXNATIVE_METAL_ARGS=--allow-other-metal" >> "$GITHUB_ENV"
+            echo "::warning::Using Xcode 27.1 Metal compiler fallback; test rendering on-device."
+          else
+            echo "::error::Xcode 27.2 or 27.1 is required on the xcode-27 runner."
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
+            exit 1
+          fi
+          sudo xcode-select -s "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun -sdk iphoneos metal --version
+          xcodebuild -downloadComponent MetalToolchain
+
+      - name: Set up Python and .NET
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install archive and NXNative dependencies
+        run: |
+          set -euo pipefail
+          brew install unar xcodegen zstd glslang
+          python -m pip install --upgrade pip
+          python -m pip install lz4 "capstone>=5,<6" fonttools backports.zstd zbic
+          python -c "import zbic; print('ZBIC decoder import: OK')"
+
+      - name: Prepare game input and prod.keys
+        env:
+          PROD_KEYS: ${{ secrets.PROD_KEYS }}
+        run: |
+          set -euo pipefail
+          test -n "$PROD_KEYS" || { echo "::error::Missing GitHub Actions secret PROD_KEYS"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/nxnative-input/game" "$RUNNER_TEMP/nxnative-input/keys" "$RUNNER_TEMP/ni-no-kuni-update"
+          printf '%s' "$PROD_KEYS" > "$RUNNER_TEMP/nxnative-input/keys/prod.keys"
+          chmod 600 "$RUNNER_TEMP/nxnative-input/keys/prod.keys"
+          test -s "$RUNNER_TEMP/nxnative-input/keys/prod.keys"
+          echo "prod.keys secret is present and nonempty."
+
+      - name: Download base NSP and update RAR from iPhone
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from urllib.parse import quote
+          from urllib.request import urlopen
+          import os
+
+          base = "http://100.127.76.121:8080/"
+          root = Path(os.environ["RUNNER_TEMP"]) / "nxnative-input" / "game"
+          files = [
+              ("Ni no Kuni II Revenant Kingdom PRINCE'S EDITION [0100BE7013E06000][v0].nsp", root / "Ni no Kuni II base.nsp", 1024**3),
+              ("Ni no Kuni II Revenant Kingdom PRINCE'S EDITION Switch NSP Update v65536.rar", Path(os.environ["RUNNER_TEMP"]) / "ni-no-kuni-update" / "update.rar", 1024**2),
+          ]
+          for remote_name, destination, minimum in files:
+              url = base + quote(remote_name, safe="")
+              print(f"Downloading: {remote_name}")
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              total = 0
+              with urlopen(url, timeout=180) as response, destination.open("wb") as out:
+                  if response.status != 200:
+                      raise SystemExit(f"HTTP {response.status} while downloading {remote_name}")
+                  while True:
+                      block = response.read(16 * 1024 * 1024)
+                      if not block:
+                          break
+                      out.write(block)
+                      total += len(block)
+                      if total and total % (512 * 1024 * 1024) < len(block):
+                          print(f"  received {total:,} bytes")
+              if total < minimum:
+                  raise SystemExit(f"Downloaded file is unexpectedly small ({total:,} bytes): {remote_name}")
+              print(f"Verified download: {destination.name} ({total:,} bytes)")
+          PY
+
+      - name: Extract update RAR and stage update NSP
+        run: |
+          set -euo pipefail
+          unar -o "$RUNNER_TEMP/ni-no-kuni-update/extracted" "$RUNNER_TEMP/ni-no-kuni-update/update.rar"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, shutil
+          extracted = Path(os.environ["RUNNER_TEMP"]) / "ni-no-kuni-update" / "extracted"
+          updates = list(extracted.rglob("*.nsp")) + list(extracted.rglob("*.NSP"))
+          if len(updates) != 1:
+              print("RAR contents:")
+              for item in extracted.rglob("*"):
+                  if item.is_file():
+                      print(item)
+              raise SystemExit(f"Expected exactly one update NSP inside the RAR; found {len(updates)}.")
+          destination = Path(os.environ["RUNNER_TEMP"]) / "nxnative-input" / "game" / "Ni no Kuni II update v65536.nsp"
+          shutil.copy2(updates[0], destination)
+          if destination.stat().st_size == 0:
+              raise SystemExit("Extracted update NSP is empty.")
+          print(f"Staged update NSP: {destination.name} ({destination.stat().st_size:,} bytes)")
+          PY
+          test -s "$RUNNER_TEMP/nxnative-input/game/Ni no Kuni II base.nsp"
+          test -s "$RUNNER_TEMP/nxnative-input/game/Ni no Kuni II update v65536.nsp"
+          echo "Base NSP and extracted update NSP are staged together for NXNative."
+          ls -lh "$RUNNER_TEMP/nxnative-input/game"
+
+      - name: Check runner disk space
+        run: |
+          set -euo pipefail
+          df -h /
+          python3 - <<'PY'
+          import shutil, os
+          free = shutil.disk_usage(os.environ["RUNNER_TEMP"]).free
+          print(f"Free runner space: {free / 1024**3:.1f} GiB")
+          if free < 35 * 1024**3:
+              raise SystemExit("At least 35 GiB free space is required before extracting/building this 11 GB game.")
+          PY
+          xcodebuild -version
+          dotnet --version
+          python --version
+
+      - name: Restore Ni no Kuni II shader cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nxnative-work/shader
+          key: nxnative-ni-no-kuni-2-iphone12promax-6gb-xcode27-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
+          restore-keys: |
+            nxnative-ni-no-kuni-2-iphone12promax-6gb-xcode27-
+
+      - name: Build Ni no Kuni II native iPhone IPA (6 GB profile)
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+          DMSH_TARGETS: ios
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nxnative-work"
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nxnative-input/game" \
+            --keys "$RUNNER_TEMP/nxnative-input/keys/prod.keys" \
+            --platform ios \
+            --6gb \
+            $NXNATIVE_METAL_ARGS \
+            --work-dir "$RUNNER_TEMP/nxnative-work" \
+            --out "$RUNNER_TEMP/Ni-no-Kuni-II-iPhone-6GB.ipa" \
+            --progress lines
+          test -s "$RUNNER_TEMP/Ni-no-Kuni-II-iPhone-6GB.ipa"
+
+      - name: Upload native iPhone IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ni-no-Kuni-II-iPhone-6GB-IPA
+          path: ${{ runner.temp }}/Ni-no-Kuni-II-iPhone-6GB.ipa
+          if-no-files-found: error
+          retention-days: 14

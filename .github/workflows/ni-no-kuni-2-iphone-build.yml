@@ -23,37 +23,6 @@ jobs:
       - name: Check out NXNative
         uses: actions/checkout@v4
 
-      - name: Connect GitHub Actions to the iPhone file server
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ secrets.TS_AUTHKEY }}
-          args: --accept-dns=false
-          ping: 100.127.76.121
-
-      - name: Restore runner DNS after Tailscale setup
-        run: |
-          set -euo pipefail
-          # tailscale/github-action may apply tailnet DNS even when --accept-dns=false
-          # is supplied. Explicitly disable DNS acceptance and flush macOS caches.
-          sudo tailscale set --accept-dns=false
-          sudo dscacheutil -flushcache
-          sudo killall -HUP mDNSResponder || true
-          echo "DNS configuration after Tailscale:"
-          scutil --dns | sed -n '1,100p'
-          echo "Resolver check:"
-          dscacheutil -q host -a name github.com
-
-      - name: Verify GitHub DNS and iPhone file-server access
-        run: |
-          set -euo pipefail
-          echo "Checking GitHub DNS and HTTPS..."
-          dscacheutil -q host -a name github.com
-          curl --fail --silent --show-error --head --max-time 15 https://github.com/ >/dev/null
-          echo "GitHub DNS/HTTPS is reachable."
-          echo "Checking the iPhone-hosted file server..."
-          curl --fail --silent --show-error --head --max-time 15 http://100.127.76.121:8080/ >/dev/null
-          echo "iPhone file server is reachable."
-
       - name: Select compatible Xcode and Metal toolchain
         run: |
           set -euo pipefail
@@ -106,6 +75,20 @@ jobs:
           chmod 600 "$RUNNER_TEMP/nxnative-input/keys/prod.keys"
           test -s "$RUNNER_TEMP/nxnative-input/keys/prod.keys"
           echo "prod.keys secret is present and nonempty."
+
+      - name: Restore Ni no Kuni II shader cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nxnative-work/shader
+          key: nxnative-ni-no-kuni-2-iphone12promax-6gb-xcode27-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
+          restore-keys: |
+            nxnative-ni-no-kuni-2-iphone12promax-6gb-xcode27-
+
+      - name: Connect GitHub Actions to the iPhone file server
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          ping: 100.127.76.121
 
       - name: Download base NSP and update RAR from iPhone
         run: |
@@ -183,14 +166,6 @@ jobs:
           xcodebuild -version
           dotnet --version
           python --version
-
-      - name: Restore Ni no Kuni II shader cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/nxnative-work/shader
-          key: nxnative-ni-no-kuni-2-iphone12promax-6gb-xcode27-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
-          restore-keys: |
-            nxnative-ni-no-kuni-2-iphone12promax-6gb-xcode27-
 
       - name: Build Ni no Kuni II native iPhone IPA (6 GB profile)
         env:

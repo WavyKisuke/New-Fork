@@ -17,13 +17,15 @@ jobs:
           authkey: ${{ secrets.TS_AUTHKEY }}
           ping: 100.127.76.121
 
-      - name: Download Ni no Kuni II update from a-Shell
+      - name: Download Ni no Kuni II update from PocketServer
         shell: bash
         run: |
           set -euo pipefail
           FILE="Ni no Kuni II Revenant Kingdom PRINCE'S EDITION Switch NSP Update v65536.rar"
-          URL="$(python3 -c 'import sys, urllib.parse; print("http://100.127.76.121:8765/" + urllib.parse.quote(sys.argv[1]))' "$FILE")"
-          echo "Downloading update from iPhone over Tailscale..."
+          URL="$(python3 -c 'import sys, urllib.parse; print("http://100.127.76.121:65184/" + urllib.parse.quote(sys.argv[1]))' "$FILE")"
+          echo "Checking PocketServer over Tailscale..."
+          curl --fail --location --show-error --silent --head --connect-timeout 20 "$URL"
+          echo "Downloading update from PocketServer..."
           START=$(date +%s)
           curl --fail --location --show-error --silent --retry 2 --connect-timeout 20 --max-time 900 \
             "$URL" --output ni-no-kuni-update.rar
@@ -32,11 +34,11 @@ jobs:
           ELAPSED=$((END - START))
           echo "Downloaded bytes: $SIZE"
           echo "Elapsed seconds: $ELAPSED"
-          if [ "$SIZE" -eq 0 ]; then
-            echo "::error::Downloaded file is empty"
+          if [ "$SIZE" -ne 93961342 ]; then
+            echo "::error::Downloaded file size does not match expected 93961342 bytes"
             exit 1
           fi
           if [ "$ELAPSED" -gt 0 ]; then
             awk -v bytes="$SIZE" -v seconds="$ELAPSED" 'BEGIN { printf "Average speed: %.2f MB/s\n", bytes / seconds / 1000000 }'
           fi
-          echo "Update transfer test completed successfully."
+          echo "PocketServer transfer test completed successfully."

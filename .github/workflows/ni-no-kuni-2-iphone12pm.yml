@@ -97,8 +97,8 @@ jobs:
 
           # Prevent a different game's folder from being surveyed or built under this workflow.
           folder_names = " ".join(str(p).lower() for f,p in files)
-          if "0100a9d01c446000" not in folder_names and "ni no kuni" not in folder_names and "ni-no-kuni" not in folder_names and "ninokuni" not in folder_names:
-              raise SystemExit("Wrong Drive folder contents: expected Ni no Kuni II (title ID 0100A9D01C446000). No matching game files were found.")
+          if "0100be7013e06000" not in folder_names and "ni no kuni" not in folder_names and "ni-no-kuni" not in folder_names and "ninokuni" not in folder_names:
+              raise SystemExit("Wrong Drive folder contents: expected Ni no Kuni II (title ID 0100BE7013E06000). No matching game files were found.")
 
           def download(item, dest):
               dest.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +144,36 @@ jobs:
               for p in sorted(archive_roots):
                   print(f"Extracting {p.name}")
                   subprocess.run([seven,"x","-y",f"-o{root/'game'}",str(p)],check=True)
+
+          # Reassemble Drive's 1 GB binary-split base NSP parts (.bcut) in numeric order.
+          # These are raw consecutive chunks, not independent NSP archives.
+          bcut_groups = {}
+          for p in (root/"raw").rglob("*"):
+              if not p.is_file(): continue
+              m = re.match(r"^(.*)_part(\\d+)\\.bcut$", p.name, re.I)
+              if m:
+                  key = (p.parent, m.group(1))
+                  bcut_groups.setdefault(key, []).append((int(m.group(2)), p))
+          for (parent, stem), chunks in bcut_groups.items():
+              chunks.sort(key=lambda item: item[0])
+              numbers = [number for number, _ in chunks]
+              expected = list(range(1, len(chunks) + 1))
+              if numbers != expected:
+                  raise SystemExit(f"Incomplete or duplicate .bcut parts for {stem}: found {numbers}, expected {expected}")
+              output = root/"game"/f"{stem}.nsp"
+              output.parent.mkdir(parents=True, exist_ok=True)
+              print(f"Merging {len(chunks)} .bcut parts into {output.name}")
+              with output.open("wb") as merged:
+                  for number, chunk in chunks:
+                      print(f"  Appending part {number}/{len(chunks)} ({chunk.stat().st_size:,} bytes)")
+                      with chunk.open("rb") as source:
+                          shutil.copyfileobj(source, merged, length=64*1024*1024)
+              with output.open("rb") as merged:
+                  magic = merged.read(4)
+              if magic != b"PFS0":
+                  output.unlink(missing_ok=True)
+                  raise SystemExit(f"Merged base package {output.name} does not have NSP PFS0 magic; refusing to build from a bad merge.")
+              print(f"Merged base NSP verified: {output.name} ({output.stat().st_size:,} bytes)")
 
           ext = {".nsp",".nsz",".xci",".xcz"}
           for p in (root/"raw").rglob("*"):

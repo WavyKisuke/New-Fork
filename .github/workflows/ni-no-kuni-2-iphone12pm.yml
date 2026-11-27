@@ -50,7 +50,7 @@ jobs:
 
       - name: Inspect and download Ni no Kuni II Drive folder
         env:
-          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID || secrets.GDRIVE_FOLDER_ID || '1HRdSFbBgc8hF_s8GorLitsZhDS8qGq0s' }}
+          GDRIVE_FOLDER_ID: '1HRdSFbBgc8hF_s8GorLitsZhDS8qGq0s'
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
           PROD_KEYS: ${{ secrets.PROD_KEYS }}
           PROD_KEYS_BASE64: ${{ secrets.PROD_KEYS_BASE64 }}
@@ -94,6 +94,11 @@ jobs:
               print(f"  {p} ({int(f.get('size', 0)):,} bytes)")
           if os.environ["BUILD_MODE"] == "inspect":
               raise SystemExit(0)
+
+          # Prevent a different game's folder from being surveyed or built under this workflow.
+          folder_names = " ".join(str(p).lower() for f,p in files)
+          if "0100a9d01c446000" not in folder_names and "ni no kuni" not in folder_names and "ni-no-kuni" not in folder_names and "ninokuni" not in folder_names:
+              raise SystemExit("Wrong Drive folder contents: expected Ni no Kuni II (title ID 0100A9D01C446000). No matching game files were found.")
 
           def download(item, dest):
               dest.parent.mkdir(parents=True, exist_ok=True)

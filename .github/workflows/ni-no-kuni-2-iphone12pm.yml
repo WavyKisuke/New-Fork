@@ -150,7 +150,7 @@ jobs:
           bcut_groups = {}
           for p in (root/"raw").rglob("*"):
               if not p.is_file(): continue
-              m = re.match(r"^(.*)_part(\\d+)\\.bcut$", p.name, re.I)
+              m = re.match(r"^(.*)_part(\d+)\.bcut$", p.name, re.I)
               if m:
                   key = (p.parent, m.group(1))
                   bcut_groups.setdefault(key, []).append((int(m.group(2)), p))

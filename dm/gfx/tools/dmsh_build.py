@@ -419,9 +419,22 @@ def vertex_ab(key, code, ctl):
     if w0 & 0x1f != 1 or (w0 >> 10) & 0xf != 0: return None
     a_sph, a_len, _, b_sph, b_len, _ = struct.unpack_from('<6I', ctl, 0x748)
     if not any((a_sph, a_len, b_sph, b_len)): return None   # one program of shader type 0, no part B: translated as it is (Ryujinx reads type 0 as a vertex shader)
-    bw0 =struct.unpack_from('<I', code, b_sph)[0] if 0x80 <= b_sph <= len(code) - 0x50 else 0
-    if a_sph != 0x30 or b_sph != struct.unpack_from('<I', ctl, 0x700)[0] + 0x30 or bw0 & 0x1f != 1 or (bw0 >> 10) & 0xf != 1 or (a_len - 0x50) % 32 or (b_len - 0x50) % 32 or b_sph + b_len > len(code):
-        sys.exit(f'[RED] {key}: vertex shader of shader type 0 without a VertexB part in the expected place (control +0x748 {a_sph:#x} {a_len:#x} {b_sph:#x} {b_len:#x})')
+    b_in_range = 0x80 <= b_sph <= len(code) - 0x50
+    bw0 = struct.unpack_from('<I', code, b_sph)[0] if b_in_range else 0
+    expected_b = struct.unpack_from('<I', ctl, 0x700)[0] + 0x30
+    checks = {
+        'A-SPH-offset': a_sph == 0x30,
+        'B-SPH-control-offset': b_sph == expected_b,
+        'B-SPH-in-code': b_in_range,
+        'B-SPH-type': (bw0 & 0x1f) == 1,
+        'B-SPH-stage': ((bw0 >> 10) & 0xf) == 1,
+        'A-length-alignment': (a_len - 0x50) % 32 == 0,
+        'B-length-alignment': (b_len - 0x50) % 32 == 0,
+        'B-end-within-code': b_sph + b_len <= len(code),
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    if failed:
+        sys.exit(f'[RED] {key}: invalid VertexA/VertexB layout; failed={",".join(failed)}; code_len={len(code):#x} expected_B={expected_b:#x} B-SPH-word={bw0:#010x}; control +0x748 {a_sph:#x} {a_len:#x} {b_sph:#x} {b_len:#x}')
     sa, sb = list(struct.unpack_from('<20I', code, a_sph)), list(struct.unpack_from('<20I', code, b_sph))
     sph = [sb[0] | sa[0] & ~(0xf << 10)] + [max(sa[i] & 0xffffff, sb[i] & 0xffffff) | sb[i] & ~0xffffff for i in (1, 2, 3)] + [sb[4]] + [sa[i] | sb[i] for i in range(5, 20)]
     a = bytearray(code[a_sph + 0x50:a_sph + a_len]); b = code[b_sph + 0x50:b_sph + b_len]

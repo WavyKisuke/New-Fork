@@ -66,6 +66,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install google-api-python-client google-auth lz4 "capstone>=5,<6" fonttools backports.zstd nsz
 
+      - name: Test Level-5 VFS3 shader reader
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s dm/tools/tests -p 'test_vfs3.py' -v
+
       - name: Download base game and RAR update from Google Drive
         env:
           GDRIVE_FOLDER_ID: 17yC1wgP2Z0SXYhj6KVGFLgSnPR8wKCRi

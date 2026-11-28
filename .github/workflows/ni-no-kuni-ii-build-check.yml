@@ -1,0 +1,77 @@
+name: Ni No Kuni II - iOS Build Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_script:
+        description: "Repository build script path (must already exist)"
+        required: true
+        default: "scripts/build-ios.sh"
+      cache_key_suffix:
+        description: "Optional cache-key suffix"
+        required: false
+        default: "default"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ni-no-kuni-ii-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-check:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Xcode environment
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild -showsdks
+          uname -a
+
+      - name: Cache DerivedData and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData
+            .build-cache
+          key: nnk2-xcode-${{ runner.os }}-${{ hashFiles('**/*.xcodeproj/**','**/*.xcworkspace/**','**/Package.resolved') }}-${{ inputs.cache_key_suffix }}
+          restore-keys: |
+            nnk2-xcode-${{ runner.os }}-
+
+      - name: Verify configured build script
+        env:
+          BUILD_SCRIPT: ${{ inputs.build_script }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$BUILD_SCRIPT" ]]; then
+            echo "::error::Build script '$BUILD_SCRIPT' is not present. Add/verify the project build script before running the compile job."
+            exit 1
+          fi
+          if [[ ! -x "$BUILD_SCRIPT" ]]; then
+            chmod +x "$BUILD_SCRIPT"
+          fi
+
+      - name: Run project build script
+        env:
+          BUILD_SCRIPT: ${{ inputs.build_script }}
+        run: |
+          set -euo pipefail
+          "$BUILD_SCRIPT"
+
+      - name: Upload build outputs (if present)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ni-no-kuni-ii-build-logs
+          path: |
+            *.log
+            build-logs/**
+            .build-cache/**
+          if-no-files-found: ignore
+          retention-days: 7

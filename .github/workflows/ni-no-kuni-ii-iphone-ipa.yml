@@ -1,0 +1,258 @@
+name: Ni no Kuni II iPhone IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run the survey first, or attempt the full IPA build"
+        type: choice
+        required: true
+        default: survey
+        options:
+          - survey
+          - build
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ni-no-kuni-ii-iphone-ipa
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 360
+    steps:
+      - name: Checkout Ni no Kuni II branch
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 27.1
+        if: ${{ inputs.mode == 'build' }}
+        run: |
+          set -euo pipefail
+          test -d "/Applications/Xcode_27.1.app/Contents/Developer" || {
+            echo "::error::Xcode 27.1 is not installed on this runner."
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
+            exit 1
+          }
+          sudo xcode-select -s "/Applications/Xcode_27.1.app/Contents/Developer"
+          xcodebuild -version | tee "$RUNNER_TEMP/xcode-version.txt"
+          grep -Fq "Xcode 27.1" "$RUNNER_TEMP/xcode-version.txt"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Reclaim runner disk space
+        run: |
+          set -euo pipefail
+          df -h /
+          xcrun simctl delete unavailable 2>/dev/null || true
+          rm -rf "$HOME/Library/Developer/Xcode/DerivedData" "$HOME/Library/Caches/pip" "$HOME/Library/Caches/Homebrew"
+          brew cleanup -s 2>/dev/null || true
+          df -h /
+
+      - name: Install Drive client and RAR extractor
+        run: |
+          set -euo pipefail
+          brew install unar xcodegen zstd glslang
+          python -m pip install --upgrade pip
+          python -m pip install google-api-python-client google-auth lz4 "capstone>=5,<6" fonttools backports.zstd nsz
+
+      - name: Download base game, RAR update, and prod.keys from Google Drive
+        env:
+          GDRIVE_FOLDER_ID: 17yC1wgP2Z0SXYhj6KVGFLgSnPR8wKCRi
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$GDRIVE_SERVICE_ACCOUNT_JSON" || {
+            echo "::error::Missing repository secret GDRIVE_SERVICE_ACCOUNT_JSON. The Drive folder must also be shared with that service account."
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/nnk2-input/game" "$RUNNER_TEMP/nnk2-input/keys" "$RUNNER_TEMP/nnk2-input/archives"
+          printf '%s' "$GDRIVE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/gdrive-service-account.json"
+          chmod 600 "$RUNNER_TEMP/gdrive-service-account.json"
+          cat > "$RUNNER_TEMP/stage_drive.py" <<'PY'
+          import os, pathlib, shutil
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaIoBaseDownload
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "nnk2-input"
+          game = root / "game"
+          keys_dir = root / "keys"
+          archives = root / "archives"
+          folder_id = os.environ["GDRIVE_FOLDER_ID"]
+          creds = service_account.Credentials.from_service_account_file(
+              pathlib.Path(os.environ["RUNNER_TEMP"]) / "gdrive-service-account.json",
+              scopes=["https://www.googleapis.com/auth/drive.readonly"])
+          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+          queue, found = [(folder_id, pathlib.Path())], []
+          while queue:
+              parent, rel = queue.pop(0)
+              token = None
+              while True:
+                  page = drive.files().list(
+                      q=f"'{parent}' in parents and trashed=false",
+                      fields="nextPageToken,files(id,name,mimeType,size,shortcutDetails)",
+                      pageToken=token, pageSize=1000).execute()
+                  for item in page.get("files", []):
+                      child = rel / item["name"]
+                      if item["mimeType"] == "application/vnd.google-apps.folder":
+                          queue.append((item["id"], child))
+                      elif item["mimeType"] == "application/vnd.google-apps.shortcut":
+                          target = item.get("shortcutDetails", {}).get("targetId")
+                          if target:
+                              meta = drive.files().get(fileId=target, fields="id,name,mimeType,size").execute()
+                              if meta["mimeType"] == "application/vnd.google-apps.folder":
+                                  queue.append((target, child))
+                              else:
+                                  found.append((meta, child))
+                      else:
+                          found.append((item, child))
+                  token = page.get("nextPageToken")
+                  if not token:
+                      break
+
+          def download(item, dest):
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              req = drive.files().get_media(fileId=item["id"])
+              with dest.open("wb") as out:
+                  transfer = MediaIoBaseDownload(out, req, chunksize=8 * 1024 * 1024)
+                  done = False
+                  while not done:
+                      status, done = transfer.next_chunk()
+                      if status:
+                          print(f"{dest.name}: {status.progress():.0%}", flush=True)
+              if not dest.is_file() or dest.stat().st_size == 0:
+                  raise SystemExit(f"Download failed or empty: {dest.name}")
+
+          package_ext = {".nsp", ".nsz", ".xci", ".xcz"}
+          selected = []
+          key_files = []
+          for item, rel in found:
+              suffix = pathlib.Path(rel.name).suffix.lower()
+              if rel.name.lower() == "prod.keys":
+                  key_files.append((item, rel))
+              elif suffix in package_ext or suffix == ".rar":
+                  selected.append((item, rel))
+          if len(key_files) != 1:
+              raise SystemExit(f"Expected exactly one prod.keys in this Drive folder; found {len(key_files)}.")
+          if not any(pathlib.Path(rel.name).suffix.lower() in package_ext for _, rel in selected):
+              raise SystemExit("No base game NSP/NSZ/XCI/XCZ was found in the Drive folder.")
+          if not any(pathlib.Path(rel.name).suffix.lower() == ".rar" for _, rel in selected):
+              raise SystemExit("No .rar update archive was found in the Drive folder.")
+
+          print("Drive inputs found:")
+          for item, rel in selected:
+              print(f"  {rel} ({int(item.get('size', 0)):,} bytes)")
+          print(f"  {key_files[0][1]} (prod.keys)")
+          download(key_files[0][0], keys_dir / "prod.keys")
+          for item, rel in selected:
+              suffix = pathlib.Path(rel.name).suffix.lower()
+              dest_dir = archives if suffix == ".rar" else game
+              download(item, dest_dir / pathlib.Path(rel.name).name)
+          PY
+          python "$RUNNER_TEMP/stage_drive.py"
+          rm -f "$RUNNER_TEMP/gdrive-service-account.json"
+
+      - name: Extract and verify RAR update packages
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for archive in "$RUNNER_TEMP"/nnk2-input/archives/*.rar "$RUNNER_TEMP"/nnk2-input/archives/*.RAR; do
+            echo "Extracting: $(basename "$archive")"
+            lsar "$archive" >/dev/null
+            out="$RUNNER_TEMP/nnk2-input/rar-extract/$(basename "$archive" .rar)"
+            mkdir -p "$out"
+            unar -quiet -o "$out" "$archive"
+            find "$out" -type f \( -iname '*.nsp' -o -iname '*.nsz' -o -iname '*.xci' -o -iname '*.xcz' \) -print0 |
+              while IFS= read -r -d '' package; do
+                name="$(basename "$package")"
+                test ! -e "$RUNNER_TEMP/nnk2-input/game/$name" || {
+                  echo "::error::Duplicate package name after RAR extraction: $name"
+                  exit 1
+                }
+                cp "$package" "$RUNNER_TEMP/nnk2-input/game/$name"
+                echo "Staged update package: $name"
+              done
+          done
+          count=$(find "$RUNNER_TEMP/nnk2-input/game" -maxdepth 1 -type f \( -iname '*.nsp' -o -iname '*.nsz' -o -iname '*.xci' -o -iname '*.xcz' \) | wc -l | tr -d ' ')
+          test "$count" -ge 2 || {
+            echo "::error::Expected the base game plus at least one update package after RAR extraction; found $count."
+            exit 1
+          }
+          echo "Staged $count Switch packages."
+          df -h "$RUNNER_TEMP"
+
+      - name: Restore Ni no Kuni II build and shader cache
+        if: ${{ inputs.mode == 'build' }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nnk2-work
+          key: nxnative-nnk2-iphone12promax-6gb-xcode27.1-${{ hashFiles('dm/gfx/tools/**', 'dm/gfx/nvn/**', 'dm/tools/**') }}
+          restore-keys: |
+            nxnative-nnk2-iphone12promax-6gb-xcode27.1-
+          save-always: true
+
+      - name: Generate Ni no Kuni II survey
+        if: ${{ inputs.mode == 'survey' }}
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nnk2-work"
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nnk2-input/game" \
+            --keys "$RUNNER_TEMP/nnk2-input/keys/prod.keys" \
+            --survey-only --work-dir "$RUNNER_TEMP/nnk2-work" --progress lines
+
+      - name: Upload Ni no Kuni II survey
+        if: ${{ inputs.mode == 'survey' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ni-no-Kuni-II-survey
+          path: ${{ runner.temp }}/nnk2-input/game/*_survey/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build Ni no Kuni II iPhone 12 Pro Max IPA (6 GB profile)
+        if: ${{ inputs.mode == 'build' }}
+        env:
+          DM_GAMES_DIR: ${{ github.workspace }}/dm/games
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nnk2-work"
+          python scripts/build_ipa_from_nsp.py "$RUNNER_TEMP/nnk2-input/game" \
+            --keys "$RUNNER_TEMP/nnk2-input/keys/prod.keys" \
+            --platform ios --6gb \
+            --work-dir "$RUNNER_TEMP/nnk2-work" \
+            --out "$RUNNER_TEMP/Ni-no-Kuni-II-Revenant-Kingdom-iPhone12ProMax-6GB.ipa" \
+            --progress lines
+
+      - name: Upload IPA
+        if: ${{ inputs.mode == 'build' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ni-no-Kuni-II-iPhone12ProMax-6GB-IPA
+          path: ${{ runner.temp }}/Ni-no-Kuni-II-Revenant-Kingdom-iPhone12ProMax-6GB.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ni-no-Kuni-II-diagnostics-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/nnk2-work/logs/**
+            ${{ runner.temp }}/nnk2-input/game/*_survey/**
+          if-no-files-found: ignore
+          retention-days: 14

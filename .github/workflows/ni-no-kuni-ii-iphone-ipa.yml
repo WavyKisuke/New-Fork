@@ -68,7 +68,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install google-api-python-client google-auth lz4 "capstone>=5,<6" fonttools backports.zstd nsz
 
-      - name: Download base game, RAR update, and prod.keys from Google Drive
+      - name: Download base game and RAR update from Google Drive
         env:
           GDRIVE_FOLDER_ID: 17yC1wgP2Z0SXYhj6KVGFLgSnPR8wKCRi
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
@@ -139,15 +139,10 @@ jobs:
 
           package_ext = {".nsp", ".nsz", ".xci", ".xcz"}
           selected = []
-          key_files = []
           for item, rel in found:
               suffix = pathlib.Path(rel.name).suffix.lower()
-              if rel.name.lower() == "prod.keys":
-                  key_files.append((item, rel))
-              elif suffix in package_ext or suffix == ".rar":
+              if suffix in package_ext or suffix == ".rar":
                   selected.append((item, rel))
-          if len(key_files) != 1:
-              raise SystemExit(f"Expected exactly one prod.keys in this Drive folder; found {len(key_files)}.")
           if not any(pathlib.Path(rel.name).suffix.lower() in package_ext for _, rel in selected):
               raise SystemExit("No base game NSP/NSZ/XCI/XCZ was found in the Drive folder.")
           if not any(pathlib.Path(rel.name).suffix.lower() == ".rar" for _, rel in selected):
@@ -156,8 +151,6 @@ jobs:
           print("Drive inputs found:")
           for item, rel in selected:
               print(f"  {rel} ({int(item.get('size', 0)):,} bytes)")
-          print(f"  {key_files[0][1]} (prod.keys)")
-          download(key_files[0][0], keys_dir / "prod.keys")
           for item, rel in selected:
               suffix = pathlib.Path(rel.name).suffix.lower()
               dest_dir = archives if suffix == ".rar" else game
@@ -165,6 +158,20 @@ jobs:
           PY
           python "$RUNNER_TEMP/stage_drive.py"
           rm -f "$RUNNER_TEMP/gdrive-service-account.json"
+
+      - name: Stage prod.keys from GitHub Actions secret
+        env:
+          PROD_KEYS: ${{ secrets.PROD_KEYS }}
+        run: |
+          set -euo pipefail
+          test -n "$PROD_KEYS" || {
+            echo "::error::Missing repository secret PROD_KEYS."
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/nnk2-input/keys"
+          printf '%s' "$PROD_KEYS" > "$RUNNER_TEMP/nnk2-input/keys/prod.keys"
+          chmod 600 "$RUNNER_TEMP/nnk2-input/keys/prod.keys"
+          test -s "$RUNNER_TEMP/nnk2-input/keys/prod.keys"
 
       - name: Extract and verify RAR update packages
         run: |
